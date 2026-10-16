@@ -7,7 +7,7 @@
 4. `npm start` puis ouvre http://localhost:3000
    Espace vendeur : onglet « Vendeur », avec ton mot de passe.
 
-## Paiement par carte (Stripe)
+## Paiement par MTN Money et Wave(Stripe)
 1. Crée un compte sur stripe.com, copie la clé secrète dans `STRIPE_SECRET_KEY` (commence par `sk_test_` pour tester).
 2. Stripe > Développeurs > Webhooks : ajoute `https://ton-domaine.com/api/webhook`, événement `checkout.session.completed`, puis copie le secret dans `STRIPE_WEBHOOK_SECRET`.
 3. Les prix sont en FCFA (monnaie Stripe « xof ») : vérifie dans ton compte Stripe que ce paiement est accepté pour ton pays.
