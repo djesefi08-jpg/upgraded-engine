@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import Stripe from "stripe";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { ADMIN_PASSWORD, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, BASE_URL = "http://localhost:3000", PORT = 3000 } = process.env;
+const { ADMIN_PASSWORD, CINETPAY_APIKEY, CINETPAY_SITE_ID, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, BASE_URL = "http://localhost:3000", PORT = 3000 } = process.env;
 if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 8) {
   console.error("Définis ADMIN_PASSWORD (8 caractères minimum) dans le fichier .env");
   process.exit(1);
@@ -46,6 +46,7 @@ app.post("/api/webhook", express.raw({ type: "application/json" }), (req, res) =
   res.sendStatus(200);
 });
 app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: false }));
 
 // ---- Authentification vendeur ----
 const sessions = new Map(), attempts = new Map();
@@ -71,7 +72,7 @@ const str = (v, max) => String(v ?? "").trim().slice(0, max);
 function clean(b) {
   const price = Number(b.price);
   if (!str(b.name, 80) || !str(b.cat, 40) || !(price >= 0 && price <= 100000)) return null;
-  const d = { name: str(b.name, 80), price: Math.round(price), cat: str(b.cat, 40), emoji: str(b.emoji, 4) || "📦", desc: str(b.desc, 500) };
+  const d = { name: str(b.name, 80), price: Math.round(price / 5) * 5, cat: str(b.cat, 40), emoji: str(b.emoji, 4) || "📦", desc: str(b.desc, 500) };
   if (typeof b.img === "string" && b.img.startsWith("data:image/") && b.img.length < 600000) d.img = b.img;
   return d;
 }
@@ -101,7 +102,26 @@ app.post("/api/checkout", async (req, res) => {
     }).filter(Boolean);
     if (!items.length) return res.status(400).json({ error: "Panier vide" });
     const total = Math.round(items.reduce((a, i) => a + i.price * i.q, 0));
-    const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, status: stripe ? "en attente de paiement" : "à payer à la livraison" };
+    const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, status: (stripe || CINETPAY_APIKEY) ? "en attente de paiement" : "à payer à la livraison" };
+    if (CINETPAY_APIKEY && CINETPAY_SITE_ID) {
+      const [first, ...rest] = nom.split(" ");
+      const r = await fetch("https://api-checkout.cinetpay.com/v2/payment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": "stephy-boutique/1.0" },
+        body: JSON.stringify({
+          apikey: CINETPAY_APIKEY, site_id: CINETPAY_SITE_ID, transaction_id: order.id,
+          amount: total, currency: "XOF", description: "Commande " + order.id, lang: "fr",
+          channels: "MOBILE_MONEY",
+          notify_url: `${BASE_URL}/api/cinetpay-notify`, return_url: `${BASE_URL}/retour?order=${order.id}`,
+          customer_name: first, customer_surname: rest.join(" ") || first, customer_phone_number: tel,
+          customer_address: adr, customer_city: "CI", customer_country: "CI", customer_state: "CI", customer_zip_code: "00225",
+        }),
+      });
+      const j = await r.json();
+      if (j.code !== "201" || !j.data?.payment_url) { console.error("CinetPay:", j); return res.status(502).json({ error: "Paiement indisponible, réessayez plus tard" }); }
+      db.orders.unshift(order); save();
+      return res.json({ id: order.id, url: j.data.payment_url });
+    }
     if (stripe) {
       const s = await stripe.checkout.sessions.create({
         mode: "payment",
@@ -115,6 +135,37 @@ app.post("/api/checkout", async (req, res) => {
     db.orders.unshift(order); save();
     res.json({ id: order.id });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur lors de la commande" }); }
+});
+
+// ---- Mobile money (CinetPay : Orange Money, MTN, Moov, Wave) ----
+async function cinetpayCheck(order) {
+  const r = await fetch("https://api-checkout.cinetpay.com/v2/payment/check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "stephy-boutique/1.0" },
+    body: JSON.stringify({ apikey: CINETPAY_APIKEY, site_id: CINETPAY_SITE_ID, transaction_id: order.id }),
+  });
+  const j = await r.json();
+  if (j.code === "00" && j.data?.status === "ACCEPTED" && Number(j.data.amount) === order.total) {
+    if (order.status !== "payée") { order.status = "payée"; save(); }
+    return true;
+  }
+  if (j.data?.status === "REFUSED" && order.status !== "payée") { order.status = "paiement refusé"; save(); }
+  return false;
+}
+app.get("/api/cinetpay-notify", (req, res) => res.sendStatus(200));
+app.post("/api/cinetpay-notify", async (req, res) => {
+  try {
+    const o = db.orders.find(x => x.id === String(req.body?.cpm_trans_id || ""));
+    if (o && CINETPAY_APIKEY) await cinetpayCheck(o);
+  } catch (e) { console.error(e); }
+  res.sendStatus(200);
+});
+app.all("/retour", async (req, res) => {
+  const id = String(req.query.order || "").replace(/[^A-Za-z0-9]/g, "");
+  const o = db.orders.find(x => x.id === id);
+  let ok = false;
+  try { if (o && CINETPAY_APIKEY) ok = await cinetpayCheck(o); } catch (e) { console.error(e); }
+  res.redirect(303, ok ? `/#/ok/${id}` : "/#/panier");
 });
 
 const PUBLIC = ["index.html", "manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png", "maskable-192.png", "maskable-512.png"];
