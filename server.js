@@ -11,6 +11,17 @@ if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 8) {
   console.error("Définis ADMIN_PASSWORD (8 caractères minimum) dans le fichier .env");
   process.exit(1);
 }
+
+// ---- Coordonnées affichées en bas de la boutique (modifie ici si elles changent) ----
+const CONTACT = {
+  email: "djesefi08@gmail.com",
+  phone: "+2250585276093",
+  whatsapp: "2250585276093",
+  tiktok: "https://www.tiktok.com/@stephylamerveille08",
+};
+const FOOTER = `<footer><p>Une question ? Écrivez-nous :</p><p><a href="mailto:${CONTACT.email}">E-mail</a> · <a href="tel:${CONTACT.phone}">Appeler</a> · <a href="https://wa.me/${CONTACT.whatsapp}" target="_blank" rel="noopener">WhatsApp</a> · <a href="${CONTACT.tiktok}" target="_blank" rel="noopener">TikTok</a></p></footer>`;
+const page = () => fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/<footer>[\s\S]*?<\/footer>/, () => FOOTER);
+
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 // ---- Données (fichier JSON : suffisant pour une petite boutique) ----
@@ -168,8 +179,8 @@ app.all("/retour", async (req, res) => {
   res.redirect(303, ok ? `/#/ok/${id}` : "/#/panier");
 });
 
-const PUBLIC = ["index.html", "manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png", "maskable-192.png", "maskable-512.png"];
-app.get("/", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
+const PUBLIC = ["manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png", "maskable-192.png", "maskable-512.png"];
+app.get(["/", "/index.html"], (req, res) => res.type("html").send(page()));
 for (const f of PUBLIC) app.get("/" + f, (req, res) => res.sendFile(path.join(__dirname, f)));
 app.use((err, req, res, next) => res.status(400).json({ error: "Requête invalide" }));
 app.listen(PORT, () => console.log(`Boutique prête sur http://localhost:${PORT}`));
