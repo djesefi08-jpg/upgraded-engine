@@ -197,22 +197,3 @@ const PUBLIC = ["manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png",
 app.get(["/", "/index.html"], (req, res) => res.type("html").send(page()));
 for (const f of PUBLIC) app.get("/" + f, (req, res) => res.sendFile(path.join(__dirname, f)));
 app.use((err, req, res, next) => res.status(400).json({ error: "Requête invalide" }));
-app.listen(PORT, () => console.log(`Boutique prête sur http://localhost:${PORT}`));
-/api/payer
-// 3. Route pour INITIALISER UN PAIEMENT WAVE / MOBILE MONEY
-app.post('/api/payer', async (req, res) => {
-    const { montant, description, nomClient, telephone } = req.body;
-
-    if (!montant || !nomClient) {
-        return res.status(400).json({ error: "Le montant et le nom du client sont obligatoires." });
-    }
-
-    // ID de transaction unique
-    const transactionId = "TXN_" + Date.now();
-
-    // --- OPTION A : Intégration d'une passerelle (ex: CinetPay / PayDunya) ---
-    // Vous envoyez une requête HTTP (avec axios ou fetch) vers l'API de la passerelle
-    // pour récupérer le lien de paiement officiel Wave.
-    
-    /* 
-    
