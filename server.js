@@ -215,41 +215,4 @@ app.post('/api/payer', async (req, res) => {
     // pour récupérer le lien de paiement officiel Wave.
     
     /* 
-    Exemple conceptuel avec une API de paiement :
-    const paymentResponse = await axios.post('https://api-checkout.cinetpay.com/v2/payment', {
-        apikey: "VOTRE_API_KEY",
-        site_id: "VOTRE_SITE_ID",
-        transaction_id: transactionId,
-        amount: montant,
-        currency: "XOF",
-        description: description,
-        customer_name: nomClient,
-        customer_phone_number: telephone,
-        notify_url: "https://votre-site.onrender.com/api/notification",
-        return_url: "https://votre-site.onrender.com/succes.html",
-    });
-    const paymentUrl = paymentResponse.data.data.payment_url;
-    */
-
-    // --- OPTION B : Solution simple (Lien direct Wave Merchant ou WhatsApp) ---
-    // Si vous préférez un lien direct vers votre compte marchand ou une redirection :
-    const paymentUrl = `https://pay.wave.com/m/VOTRE_MERCHANT_ID/c/CI?amount=${montant}`;
-
-    res.json({
-        success: true,
-        transactionId: transactionId,
-        paymentUrl: paymentUrl // Le serveur renvoie le lien cliquable à Flutter
-    });
-});
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'package:url_launcher/url_launcher.dart';
-
-Future<void> demarrerPaiementWave(BuildContext context, String baseUrl, double montant, String description) async {
-  // Afficher un chargement
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (context) => const Center(child: CircularProgressIndicator()),
-  );
+    
