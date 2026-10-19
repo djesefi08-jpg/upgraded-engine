@@ -197,4 +197,4 @@ const PUBLIC = ["manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png",
 app.get(["/", "/index.html"], (req, res) => res.type("html").send(page()));
 for (const f of PUBLIC) app.get("/" + f, (req, res) => res.sendFile(path.join(__dirname, f)));
 app.use((err, req, res, next) => res.status(400).json({ error: "Requête invalide" }));
-app.listen(PORT, () => console.log(`Boutique prête sur http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Boutique prête sur http://localhost:${PORT}`))
