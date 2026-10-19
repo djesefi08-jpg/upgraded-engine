@@ -20,7 +20,21 @@ const CONTACT = {
   tiktok: "https://www.tiktok.com/@stephylamerveille08",
 };
 const FOOTER = `<footer><p>Une question ? Écrivez-nous :</p><p><a href="mailto:${CONTACT.email}">E-mail</a> · <a href="tel:${CONTACT.phone}">Appeler</a> · <a href="https://wa.me/${CONTACT.whatsapp}" target="_blank" rel="noopener">WhatsApp</a> · <a href="${CONTACT.tiktok}" target="_blank" rel="noopener">TikTok</a></p></footer>`;
-const page = () => fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/<footer>[\s\S]*?<\/footer>/, () => FOOTER);
+// ---- Section "Nouveautés" sur la page d'accueil (les 4 derniers produits ajoutés) ----
+const EXTRAS = `(function () {
+  var _home = home;
+  home = function () {
+    _home();
+    var f = document.querySelector(".filters");
+    if (!f || S.products.length <= 4) return;
+    var latest = S.products.slice().sort(function (a, b) { return b.id - a.id; }).slice(0, 4);
+    var s = document.createElement("section");
+    s.id = "news";
+    s.innerHTML = '<h2 style="margin:.2em 0 .6em;font-size:1.4rem">Nouveautés</h2><div class="grid">' + grid(latest) + '</div><h2 style="margin:1.4em 0 .6em;font-size:1.4rem">Tous les produits</h2>';
+    f.before(s);
+  };
+})();`;
+const page = () => fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/<footer>[\s\S]*?<\/footer>/, () => FOOTER).replace("</body>", () => "<script>" + EXTRAS + "</script></body>");
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
