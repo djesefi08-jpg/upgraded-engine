@@ -198,3 +198,289 @@ app.get(["/", "/index.html"], (req, res) => res.type("html").send(page()));
 for (const f of PUBLIC) app.get("/" + f, (req, res) => res.sendFile(path.join(__dirname, f)));
 app.use((err, req, res, next) => res.status(400).json({ error: "Requête invalide" }));
 app.listen(PORT, () => console.log(`Boutique prête sur http://localhost:${PORT}`));
+/api/payer
+// 3. Route pour INITIALISER UN PAIEMENT WAVE / MOBILE MONEY
+app.post('/api/payer', async (req, res) => {
+    const { montant, description, nomClient, telephone } = req.body;
+
+    if (!montant || !nomClient) {
+        return res.status(400).json({ error: "Le montant et le nom du client sont obligatoires." });
+    }
+
+    // ID de transaction unique
+    const transactionId = "TXN_" + Date.now();
+
+    // --- OPTION A : Intégration d'une passerelle (ex: CinetPay / PayDunya) ---
+    // Vous envoyez une requête HTTP (avec axios ou fetch) vers l'API de la passerelle
+    // pour récupérer le lien de paiement officiel Wave.
+    
+    /* 
+    Exemple conceptuel avec une API de paiement :
+    const paymentResponse = await axios.post('https://api-checkout.cinetpay.com/v2/payment', {
+        apikey: "VOTRE_API_KEY",
+        site_id: "VOTRE_SITE_ID",
+        transaction_id: transactionId,
+        amount: montant,
+        currency: "XOF",
+        description: description,
+        customer_name: nomClient,
+        customer_phone_number: telephone,
+        notify_url: "https://votre-site.onrender.com/api/notification",
+        return_url: "https://votre-site.onrender.com/succes.html",
+    });
+    const paymentUrl = paymentResponse.data.data.payment_url;
+    */
+
+    // --- OPTION B : Solution simple (Lien direct Wave Merchant ou WhatsApp) ---
+    // Si vous préférez un lien direct vers votre compte marchand ou une redirection :
+    const paymentUrl = `https://pay.wave.com/m/VOTRE_MERCHANT_ID/c/CI?amount=${montant}`;
+
+    res.json({
+        success: true,
+        transactionId: transactionId,
+        paymentUrl: paymentUrl // Le serveur renvoie le lien cliquable à Flutter
+    });
+});
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:url_launcher/url_launcher.dart';
+
+Future<void> demarrerPaiementWave(BuildContext context, String baseUrl, double montant, String description) async {
+  // Afficher un chargement
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => const Center(child: CircularProgressIndicator()),
+  );
+
+  try {
+    // 1. Demander le lien de paiement au serveur Node.js
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/payer'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'montant': montant,
+        'description': description,
+        'nomClient': 'Client Test',
+      }),
+    );
+
+    // Fermer le chargement
+    Navigator.pop(context);
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final String paymentUrl = data['paymentUrl'];
+
+      final Uri url = Uri.parse(paymentUrl);
+
+      // 2. Ouvrir l'application Wave ou le lien de paiement
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        throw 'Impossible d\'ouvrir le lien de paiement.';
+      }
+    } else {
+      throw 'Erreur lors de l\'initialisation du paiement.';
+    }
+  } catch (e) {
+    // Fermer le chargement si une erreur survient
+    if (Navigator.canPop(context)) Navigator.pop(context);
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Erreur : $e'), backgroundColor: Colors.red),
+    );
+  }
+}
+ElevatedButton.icon(
+  onPressed: () => demarrerPaiementWave(context, 'http://10.0.2.2:3000', 5000, 'Achat de produits'),
+  icon: const Icon(Icons.account_balance_wallet, color: Colors.white),
+  label: const Text('Payer 5000 FCFA avec Wave', style: TextStyle(color: Colors.white)),
+  style: ElevatedButton.styleFrom(
+    backgroundColor: const Color(0xFF11B3EE), // Bleu Wave
+    minimumSize: const Size.fromHeight(50),
+  ),
+)
+// Route combinée : Enregistrer le message + Générer le lien de paiement Wave
+app.post('/api/commander', (req, res) => {
+    const { nom, email, telephone, message, montant } = req.body;
+    
+    if (!nom || !message || !montant) {
+        return res.status(400).json({ error: "Le nom, le message et le montant sont obligatoires." });
+    }
+
+    // 1. Sauvegarder le message dans le fichier JSON (Boîte de réception)
+    const newMessage = {
+        id: Date.now(),
+        nom,
+        email: email || "Non renseigné",
+        telephone: telephone || "Non renseigné",
+        message,
+        montant: `${montant} FCFA`,
+        date: new Date().toLocaleString()
+    };
+
+    let messages = [];
+    if (fs.existsSync(DATA_FILE)) {
+        const data = fs.readFileSync(DATA_FILE, 'utf8');
+        try {
+            messages = JSON.parse(data);
+        } catch (err) {
+            messages = [];
+        }
+    }
+
+    messages.unshift(newMessage);
+    fs.writeFileSync(DATA_FILE, JSON.stringify(messages, null, 2), 'utf8');
+
+    // 2. Générer le lien de paiement Wave (Lien marchand direct ou via passerelle)
+    // Remplacez VOTRE_MERCHANT_ID par votre identifiant Wave Business
+    const paymentUrl = `https://pay.wave.com/m/VOTRE_MERCHANT_ID/c/CI?amount=${montant}`;
+
+    // 3. Renvoyer la réponse positive avec le lien de paiement à Flutter
+    res.status(201).json({ 
+        success: true, 
+        message: "Message enregistré et commande initialisée !",
+        paymentUrl: paymentUrl 
+    });
+});
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:url_launcher/url_launcher.dart';
+
+class OrderContactScreen extends StatefulWidget {
+  final String baseUrl;
+  const OrderContactScreen({super.key, required this.baseUrl});
+
+  @override
+  State<OrderContactScreen> createState() => _OrderContactScreenState();
+}
+
+class _OrderContactScreenState extends State<OrderContactScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _nomController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _telephoneController = TextEditingController();
+  final _messageController = TextEditingController();
+  final _montantController = TextEditingController(); // Pour saisir le montant (ex: 5000)
+  bool _isLoading = false;
+
+  Future<void> _envoyerEtPayer() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      // 1. Envoyer au serveur (Enregistre le message + génère le lien Wave)
+      final response = await http.post(
+        Uri.parse('${widget.baseUrl}/api/commander'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'nom': _nomController.text,
+          'email': _emailController.text,
+          'telephone': _telephoneController.text,
+          'message': _messageController.text,
+          'montant': double.parse(_montantController.text),
+        }),
+      );
+
+      if (response.statusCode == 201) {
+        final data = jsonDecode(response.body);
+        final String paymentUrl = data['paymentUrl'];
+
+        // 2. Ouvrir Wave automatiquement
+        final Uri url = Uri.parse(paymentUrl);
+        if (await canLaunchUrl(url)) {
+          await launchUrl(url, mode: LaunchMode.externalApplication);
+        } else {
+          throw 'Message enregistré, mais impossible d\'ouvrir l\'application Wave.';
+        }
+
+        // Réinitialiser le formulaire
+        _formKey.currentState!.reset();
+      } else {
+        throw 'Erreur lors de l\'enregistrement de la commande.';
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur : $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Commander & Payer avec Wave')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            children: [
+              TextFormField(
+                controller: _nomController,
+                decoration: const InputDecoration(labelText: 'Votre nom complet', prefixIcon: Icon(Icons.person)),
+                validator: (value) => value!.isEmpty ? 'Veuillez entrer votre nom' : null,
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _telephoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'Votre numéro de téléphone', prefixIcon: Icon(Icons.phone)),
+                validator: (value) => value!.isEmpty ? 'Veuillez entrer votre numéro' : null,
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _emailController,
+                decoration: const InputDecoration(labelText: 'Votre email (facultatif)', prefixIcon: Icon(Icons.email)),
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _montantController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Montant à payer (en FCFA)', prefixIcon: Icon(Icons.money)),
+                validator: (value) => value!.isEmpty ? 'Veuillez entrer le montant' : null,
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _messageController,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Votre message (Détails de la commande)', 
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) => value!.isEmpty ? 'Veuillez entrer un message' : null,
+              ),
+              const SizedBox(height: 20),
+              _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : ElevatedButton.icon(
+                      onPressed: _envoyerEtPayer,
+                      icon: const Icon(Icons.payment, color: Colors.white),
+                      label: const Text(
+                        'Envoyer la commande & Payer avec Wave', 
+                        style: TextStyle(fontSize: 16, color: Colors.white),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF11B3EE), // Bleu Wave
+                        minimumSize: const Size.fromHeight(50),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0        # Pour communiquer avec votre serveur Node.js
+  url_launcher: ^6.2.5  # Pour ouvrir l'application Wave automatiquement
