@@ -1,7 +1,0 @@
-mon-projet/
-│
-├── server.js          // Le serveur Node.js (API + Sauvegarde)
-├── public/
-│   ├── contact.html   // Le formulaire pour envoyer un message
-│   └── admin.html     // La page pour lire les messages (protégée)
-└── messages.json      // Fichier de sauvegarde des messages (créé automatiquement)
