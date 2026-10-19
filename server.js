@@ -253,33 +253,3 @@ Future<void> demarrerPaiementWave(BuildContext context, String baseUrl, double m
     barrierDismissible: false,
     builder: (context) => const Center(child: CircularProgressIndicator()),
   );
-
-  try {
-    // 1. Demander le lien de paiement au serveur Node.js
-    final response = await http.post(
-      Uri.parse('$baseUrl/api/payer'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'montant': montant,
-        'description': description,
-        'nomClient': 'Client Test',
-      }),
-    );
-
-    // Fermer le chargement
-    Navigator.pop(context);
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      final String paymentUrl = data['paymentUrl'];
-
-      final Uri url = Uri.parse(paymentUrl);
-
-      // 2. Ouvrir l'application Wave ou le lien de paiement
-      if (await canLaunchUrl(url)) {
-        await launchUrl(url, mode: LaunchMode.externalApplication);
-      } else {
-        throw 'Impossible d\'ouvrir le lien de paiement.';
-      }
-    } else {
-      throw 'Erreur lors de l\'initialisation du paiement
