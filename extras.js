@@ -3,6 +3,19 @@
   var nav = document.querySelector(".nav");
   if (nav) { var link = document.createElement("a"); link.href = "#/contact"; link.textContent = "Contact"; nav.appendChild(link); }
 
+  // ---- Classement du catalogue par catégorie (ordre alphabétique, produits de A à Z) ----
+  var _grid = grid;
+  grid = function (list) {
+    if (!list.length) return _grid(list);
+    var groups = {};
+    list.forEach(function (p) { var c = p.cat || "Autres"; (groups[c] = groups[c] || []).push(p); });
+    return Object.keys(groups).sort(function (a, b) { return a.localeCompare(b, "fr"); }).map(function (c) {
+      var items = groups[c].slice().sort(function (a, b) { return a.name.localeCompare(b.name, "fr"); });
+      return '<h2 style="grid-column:1/-1;margin:.9em 0 .1em;font-size:1.3rem;border-bottom:2px solid var(--sun);padding-bottom:4px">' + esc(c) +
+        ' <span class="muted" style="font-weight:400;font-size:.9rem">(' + items.length + ')</span></h2>' + _grid(items);
+    }).join("");
+  };
+
   // ---- Section « Nouveautés » sur la page d’accueil (4 derniers produits) ----
   var _home = home;
   home = function () {
@@ -12,7 +25,7 @@
     var latest = S.products.slice().sort(function (a, b) { return b.id - a.id; }).slice(0, 4);
     var s = document.createElement("section");
     s.id = "news";
-    s.innerHTML = '<h2 style="margin:.2em 0 .6em;font-size:1.4rem">Nouveautés</h2><div class="grid">' + grid(latest) + '</div><h2 style="margin:1.4em 0 .6em;font-size:1.4rem">Tous les produits</h2>';
+    s.innerHTML = '<h2 style="margin:.2em 0 .6em;font-size:1.4rem">Nouveautés</h2><div class="grid">' + _grid(latest) + '</div><h2 style="margin:1.4em 0 .6em;font-size:1.4rem">Tous les produits</h2>';
     f.before(s);
   };
 
