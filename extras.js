@@ -48,10 +48,49 @@
       } catch (err) { toast(err.message); btn.disabled = false; }
     });
   }
+
+  // ---- Page « Paiement » : récapitulatif, livraison et choix du paiement (mobile money) ----
+  function payPage() {
+    if (!count()) { location.hash = "#/panier"; return; }
+    var lines = cartItems().map(function (x) {
+      return '<div class="row"><div class="grow"><strong>' + esc(x.p.name) + '</strong><div class="muted">' + x.q + ' × ' + eur(x.p.price) + '</div></div><strong>' + eur(x.p.price * x.q) + '</strong></div>';
+    }).join("");
+    var ops = [["Orange Money", "#ff7900"], ["MTN Money", "#f5b800"], ["Moov Money", "#0072bc"], ["Wave", "#1dc8ff"]];
+    var optStyle = 'display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card);font-size:1rem;font-weight:600';
+    var radios = ops.map(function (o, i) {
+      return '<label style="' + optStyle + '"><input type="radio" name="op" value="' + o[0] + '"' + (i === 0 ? " checked" : "") + ' style="width:auto;padding:0">' +
+        '<span style="width:14px;height:14px;border-radius:50%;background:' + o[1] + ';display:inline-block"></span>' + o[0] + '</label>';
+    }).join("");
+    $("#app").innerHTML = '<h1>Paiement</h1><h2>Votre commande</h2>' + lines +
+      '<div class="total"><span>Total à payer</span><span>' + eur(total()) + '</span></div>' +
+      '<form class="f" id="pf2"><h2>Livraison</h2>' +
+      '<label>Nom complet<input name="nom" required autocomplete="name"></label>' +
+      '<label>Adresse de livraison<textarea name="adr" rows="3" required autocomplete="street-address"></textarea></label>' +
+      '<label>Numéro de téléphone<input name="tel" type="tel" required autocomplete="tel" pattern="[0-9 +().-]{6,}"></label>' +
+      '<h2>Mode de paiement</h2>' + radios +
+      '<label style="' + optStyle + '"><input type="radio" name="op" value="livraison" style="width:auto;padding:0">Payer à la livraison</label>' +
+      '<p class="muted">Pour le mobile money, vous serez dirigé vers la page sécurisée de paiement pour valider avec votre code.</p>' +
+      '<button class="btn" type="submit">Payer ' + eur(total()) + '</button></form>';
+    $("#pf2").addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var f = new FormData(ev.target), btn = ev.target.querySelector("button[type=submit]");
+      var op = f.get("op"), cash = op === "livraison";
+      btn.disabled = true; btn.textContent = "Veuillez patienter…";
+      try {
+        var d = await api("/api/checkout", "POST", {
+          nom: f.get("nom"), adr: f.get("adr"), tel: f.get("tel"),
+          method: cash ? "livraison" : "mobile", operator: cash ? "" : op,
+          items: Object.entries(S.cart).map(function (kv) { return { id: +kv[0], q: kv[1] }; })
+        });
+        if (d.url) location.href = d.url; else location.hash = "#/ok/" + d.id;
+      } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = "Payer " + eur(total()); }
+    });
+  }
   var _render = render;
   render = function () {
     var h = location.hash.replace(/^#\/?/, "").split("/");
     if (h[0] === "contact") { document.querySelector("#cnt").textContent = count(); contactPage(); }
+    else if (h[0] === "commande") { document.querySelector("#cnt").textContent = count(); payPage(); }
     else _render();
   };
 
