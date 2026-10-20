@@ -19,7 +19,7 @@ const CONTACT = {
   tiktok: "https://www.tiktok.com/@stephylamerveille08",
 };
 const FOOTER = `<footer><p>Une question ? Écrivez-nous :</p><p><a href="mailto:${CONTACT.email}">E-mail</a> · <a href="tel:${CONTACT.phone}">Appeler</a> · <a href="https://wa.me/${CONTACT.whatsapp}" target="_blank" rel="noopener">WhatsApp</a> · <a href="${CONTACT.tiktok}" target="_blank" rel="noopener">TikTok</a></p></footer>`;
-// extras.js (Nouveautés, Contact, Messages) est ajouté à la page ; s'il manque, la boutique marche quand même
+// extras.js (Nouveautés, Contact, Paiement, Messages) est ajouté à la page ; s'il manque, la boutique marche quand même
 const readExtras = () => { try { return fs.readFileSync(path.join(__dirname, "extras.js"), "utf8"); } catch { return ""; } };
 const page = () => {
   let h = fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/<footer>[\s\S]*?<\/footer>/, () => FOOTER);
@@ -120,8 +120,11 @@ app.post("/api/checkout", async (req, res) => {
     }).filter(Boolean);
     if (!items.length) return res.status(400).json({ error: "Panier vide" });
     const total = Math.round(items.reduce((a, i) => a + i.price * i.q, 0));
-    const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, status: (stripe || CINETPAY_APIKEY) ? "en attente de paiement" : "à payer à la livraison" };
-    if (CINETPAY_APIKEY && CINETPAY_SITE_ID) {
+    const mobile = b.method !== "livraison";
+    const operator = ["Orange Money", "MTN Money", "Moov Money", "Wave"].includes(b.operator) ? b.operator : "";
+    if (mobile && !(CINETPAY_APIKEY && CINETPAY_SITE_ID)) return res.status(503).json({ error: "Le paiement mobile n’est pas encore activé. Choisissez « Payer à la livraison »." });
+    const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, operator, status: mobile ? "en attente de paiement" + (operator ? " · " + operator : "") : "à payer à la livraison" };
+    if (mobile) {
       const [first, ...rest] = nom.split(" ");
       const r = await fetch("https://api-checkout.cinetpay.com/v2/payment", {
         method: "POST",
@@ -139,16 +142,6 @@ app.post("/api/checkout", async (req, res) => {
       if (j.code !== "201" || !j.data?.payment_url) { console.error("CinetPay:", j); return res.status(502).json({ error: "Paiement indisponible, réessayez plus tard" }); }
       db.orders.unshift(order); save();
       return res.json({ id: order.id, url: j.data.payment_url });
-    }
-    if (stripe) {
-      const s = await stripe.checkout.sessions.create({
-        mode: "payment",
-        line_items: items.map(i => ({ quantity: i.q, price_data: { currency: "xof", unit_amount: Math.round(i.price), product_data: { name: i.name } } })),
-        success_url: `${BASE_URL}/#/ok/${order.id}`, cancel_url: `${BASE_URL}/#/panier`,
-        metadata: { orderId: order.id },
-      });
-      db.orders.unshift(order); save();
-      return res.json({ id: order.id, url: s.url });
     }
     db.orders.unshift(order); save();
     res.json({ id: order.id });
@@ -188,10 +181,10 @@ async function cinetpayCheck(order) {
   });
   const j = await r.json();
   if (j.code === "00" && j.data?.status === "ACCEPTED" && Number(j.data.amount) === order.total) {
-    if (order.status !== "payée") { order.status = "payée"; save(); }
+    if (!String(order.status).startsWith("payée")) { order.status = "payée" + (order.operator ? " · " + order.operator : ""); save(); }
     return true;
   }
-  if (j.data?.status === "REFUSED" && order.status !== "payée") { order.status = "paiement refusé"; save(); }
+  if (j.data?.status === "REFUSED" && !String(order.status).startsWith("payée")) { order.status = "paiement refusé"; save(); }
   return false;
 }
 app.get("/api/cinetpay-notify", (req, res) => res.sendStatus(200));
