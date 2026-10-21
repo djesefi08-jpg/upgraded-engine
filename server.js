@@ -19,12 +19,13 @@ const CONTACT = {
   tiktok: "https://www.tiktok.com/@stephylamerveille08",
 };
 const FOOTER = `<footer><p>Une question ? Écrivez-nous :</p><p><a href="mailto:${CONTACT.email}">E-mail</a> · <a href="tel:${CONTACT.phone}">Appeler</a> · <a href="https://wa.me/${CONTACT.whatsapp}" target="_blank" rel="noopener">WhatsApp</a> · <a href="${CONTACT.tiktok}" target="_blank" rel="noopener">TikTok</a></p></footer>`;
-// extras.js (Nouveautés, Contact, Paiement, Messages) est ajouté à la page ; s'il manque, la boutique marche quand même
-const readExtras = () => { try { return fs.readFileSync(path.join(__dirname, "extras.js"), "utf8"); } catch { return ""; } };
+// extras.js et compte.js sont ajoutés à la page ; s'ils manquent, la boutique marche quand même
+const readScripts = () => ["extras.js", "compte.js"].map(n => { try { return fs.readFileSync(path.join(__dirname, n), "utf8"); } catch { return ""; } })
+  .filter(Boolean).map(x => "<script>" + x + "</script>").join("");
 const page = () => {
-  let h = fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/<footer>[\s\S]*?<\/footer>/, () => FOOTER);
-  const x = readExtras();
-  return x ? h.replace("</body>", () => "<script>" + x + "</script></body>") : h;
+  const h = fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/<footer>[\s\S]*?<\/footer>/, () => FOOTER);
+  const x = readScripts();
+  return x ? h.replace("</body>", () => x + "</body>") : h;
 };
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
@@ -44,6 +45,7 @@ const DIR = path.join(__dirname, "data"), FILE = path.join(DIR, "db.json");
 fs.mkdirSync(DIR, { recursive: true });
 let db = fs.existsSync(FILE) ? JSON.parse(fs.readFileSync(FILE, "utf8")) : { products: SEED, orders: [], nid: SEED.length + 1 };
 db.messages = db.messages || [];
+db.users = db.users || [];
 const save = () => { fs.writeFileSync(FILE + ".tmp", JSON.stringify(db)); fs.renameSync(FILE + ".tmp", FILE); };
 save();
 
@@ -85,8 +87,68 @@ app.post("/api/login", (req, res) => {
   res.json({ token });
 });
 
-// ---- Produits ----
+// ---- Comptes clients : inscription, connexion, mes commandes ----
 const str = (v, max) => String(v ?? "").trim().slice(0, max);
+const scrypt = (p, s) => new Promise((ok, no) => crypto.scrypt(String(p), s, 64, (e, k) => (e ? no(e) : ok(k))));
+const TKEY = crypto.createHash("sha256").update("clients:" + (process.env.SESSION_SECRET || ADMIN_PASSWORD)).digest();
+const makeTok = uid => {
+  const p = Buffer.from(JSON.stringify({ uid, exp: Date.now() + 60 * 864e5 })).toString("base64url");
+  return p + "." + crypto.createHmac("sha256", TKEY).update(p).digest("base64url");
+};
+const readTok = t => {
+  const [p, s] = String(t || "").split(".");
+  if (!p || !s) return null;
+  const ok = crypto.createHmac("sha256", TKEY).update(p).digest("base64url");
+  if (s.length !== ok.length || !crypto.timingSafeEqual(Buffer.from(s), Buffer.from(ok))) return null;
+  try { const d = JSON.parse(Buffer.from(p, "base64url").toString()); return d.exp > Date.now() ? d.uid : null; } catch { return null; }
+};
+const normIdent = v => {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s.includes("@")) return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? { key: s, mail: true, shown: s } : null;
+  let d = s.replace(/\D/g, "");
+  if (d.startsWith("225") && d.length === 13) d = d.slice(3);
+  return d.length >= 8 && d.length <= 15 ? { key: d, mail: false, shown: d } : null;
+};
+const pub = u => ({ nom: u.nom, ident: u.ident, tel: u.mail ? "" : u.ident });
+const authHits = new Map();
+const tooMany = req => {
+  const now = Date.now(), r = (authHits.get(req.ip) || []).filter(t => now - t < 900e3);
+  if (r.length >= 20) return true;
+  r.push(now); authHits.set(req.ip, r); return false;
+};
+app.post("/api/register", async (req, res) => {
+  try {
+    if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
+    const b = req.body || {}, nom = str(b.nom, 100), id = normIdent(b.ident), pw = String(b.password || "").slice(0, 200);
+    if (!nom || !id) return res.status(400).json({ error: "Entrez votre nom et un numéro de téléphone ou un e-mail valide" });
+    if (pw.length < 6) return res.status(400).json({ error: "Le mot de passe doit avoir au moins 6 caractères" });
+    if (db.users.some(u => u.key === id.key)) return res.status(409).json({ error: "Ce numéro ou cet e-mail a déjà un compte. Connectez-vous." });
+    const salt = crypto.randomBytes(16).toString("hex");
+    const user = { id: crypto.randomBytes(6).toString("hex"), nom, key: id.key, ident: id.shown, mail: id.mail, salt, hash: (await scrypt(pw, salt)).toString("hex"), date: new Date().toISOString() };
+    db.users.push(user); save();
+    res.json({ token: makeTok(user.id), user: pub(user) });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
+});
+app.post("/api/client-login", async (req, res) => {
+  try {
+    if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
+    const b = req.body || {}, id = normIdent(b.ident), pw = String(b.password || "").slice(0, 200);
+    const u = id && db.users.find(x => x.key === id.key);
+    const ok = u && crypto.timingSafeEqual(await scrypt(pw, u.salt), Buffer.from(u.hash, "hex"));
+    if (!ok) return res.status(401).json({ error: "Identifiant ou mot de passe incorrect" });
+    res.json({ token: makeTok(u.id), user: pub(u) });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
+});
+const clientAuth = (req, res, next) => {
+  const u = db.users.find(x => x.id === readTok(req.headers["x-client-token"]));
+  if (!u) return res.status(401).json({ error: "Connectez-vous" });
+  req.user = u; next();
+};
+app.get("/api/me", clientAuth, (req, res) => res.json(pub(req.user)));
+app.get("/api/my-orders", clientAuth, (req, res) =>
+  res.json(db.orders.filter(o => o.userId === req.user.id).map(o => ({ id: o.id, date: o.date, items: o.items, total: o.total, status: o.status }))));
+
+// ---- Produits ----
 function clean(b) {
   const price = Number(b.price);
   if (!str(b.name, 80) || !str(b.cat, 40) || !(price >= 0 && price <= 100000)) return null;
@@ -123,7 +185,8 @@ app.post("/api/checkout", async (req, res) => {
     const mobile = b.method !== "livraison";
     const operator = ["Orange Money", "MTN Money", "Moov Money", "Wave"].includes(b.operator) ? b.operator : "";
     if (mobile && !(CINETPAY_APIKEY && CINETPAY_SITE_ID)) return res.status(503).json({ error: "Le paiement mobile n’est pas encore activé. Choisissez « Payer à la livraison »." });
-    const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, operator, status: mobile ? "en attente de paiement" + (operator ? " · " + operator : "") : "à payer à la livraison" };
+    const uid = readTok(b.ct), user = uid && db.users.find(x => x.id === uid);
+    const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, operator, userId: user ? user.id : "", status: mobile ? "en attente de paiement" + (operator ? " · " + operator : "") : "à payer à la livraison" };
     if (mobile) {
       const [first, ...rest] = nom.split(" ");
       const r = await fetch("https://api-checkout.cinetpay.com/v2/payment", {
