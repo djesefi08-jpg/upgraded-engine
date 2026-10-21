@@ -16,17 +16,38 @@
     }).join("");
   };
 
-  // ---- Section « Nouveautés » sur la page d’accueil (4 derniers produits) ----
+  // ---- Accueil : recherche tout en haut, filtres pliables, section « Nouveautés » ----
   var _home = home;
   home = function () {
     _home();
-    var f = document.querySelector(".filters");
-    if (!f || S.products.length <= 4) return;
-    var latest = S.products.slice().sort(function (a, b) { return b.id - a.id; }).slice(0, 4);
-    var s = document.createElement("section");
-    s.id = "news";
-    s.innerHTML = '<h2 style="margin:.2em 0 .6em;font-size:1.4rem">Nouveautés</h2><div class="grid">' + _grid(latest) + '</div><h2 style="margin:1.4em 0 .6em;font-size:1.4rem">Tous les produits</h2>';
-    f.before(s);
+    var app = document.querySelector("#app"), f = document.querySelector(".filters"), g = document.querySelector("#grid");
+    if (!app || !f || !g) return;
+    // Barre de recherche au tout début de la page ; catégorie et prix dans un volet « Filtres »
+    var det = document.createElement("details");
+    det.style.cssText = "grid-column:1/-1";
+    det.innerHTML = '<summary style="cursor:pointer;font-weight:600;padding:4px 0">Filtres : catégorie et prix</summary><div class="fbox" style="display:grid;gap:8px;margin-top:8px"></div>';
+    var box = det.querySelector(".fbox");
+    ["fc", "fmin", "fmax"].forEach(function (id) { var el = document.getElementById(id); if (el) box.appendChild(el); });
+    f.appendChild(det);
+    f.style.gridTemplateColumns = "1fr";
+    app.prepend(f);
+    // Section « Nouveautés » (4 derniers produits) juste avant le catalogue
+    if (S.products.length > 4) {
+      var latest = S.products.slice().sort(function (a, b) { return b.id - a.id; }).slice(0, 4);
+      var s = document.createElement("section");
+      s.id = "news";
+      s.innerHTML = '<h2 style="margin:.2em 0 .6em;font-size:1.4rem">Nouveautés</h2><div class="grid">' + _grid(latest) + '</div><h2 style="margin:1.4em 0 .6em;font-size:1.4rem">Tous les produits</h2>';
+      g.before(s);
+    }
+    // Pendant une recherche ou un filtre, on cache le logo et les nouveautés pour voir les résultats tout de suite
+    function toggle() {
+      var active = ["fq", "fc", "fmin", "fmax"].some(function (id) { var el = document.getElementById(id); return el && el.value; });
+      var fc = document.getElementById("fc");
+      det.open = !!(fc && (fc.value || document.getElementById("fmin").value || document.getElementById("fmax").value));
+      [".hero", "#app > h1", "#news"].forEach(function (sel) { var el = document.querySelector(sel); if (el) el.style.display = active ? "none" : ""; });
+    }
+    ["fq", "fc", "fmin", "fmax"].forEach(function (id) { var el = document.getElementById(id); if (el) el.addEventListener("input", toggle); });
+    toggle();
   };
 
   // ---- Page « Contact » : formulaire pour écrire au vendeur ----
