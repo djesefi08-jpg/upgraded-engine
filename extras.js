@@ -166,3 +166,29 @@
     } catch (err) { toast(err.message); }
   });
 })();
+// ---- Pied de page : logos cliquables (E-mail, Appeler, WhatsApp, TikTok) à la place des mots ----
+(function () {
+  var PHONE = '<path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>';
+  var ICONS = {
+    "E-mail": { bg: "#c9a45c", svg: '<path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>' },
+    "Appeler": { bg: "#1b7f55", svg: PHONE },
+    "WhatsApp": { bg: "#25D366", svg: '<path d="M12 3.2a8.8 8.8 0 0 0-7.5 13.4L3.2 20.8l4.3-1.2A8.8 8.8 0 1 0 12 3.2z" fill="none" stroke="#fff" stroke-width="1.7" stroke-linejoin="round"/><g transform="translate(7.2 7.2) scale(.4)">' + PHONE + '</g>' },
+    "TikTok": { bg: "#000000", svg: '<path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z"/>' }
+  };
+  var f = document.querySelector("footer");
+  if (!f) return;
+  var ps = f.querySelectorAll("p"), p = ps[ps.length - 1];
+  if (!p) return;
+  var anchors = Array.prototype.slice.call(p.querySelectorAll("a"));
+  p.innerHTML = "";
+  p.style.cssText = "display:flex;justify-content:center;gap:14px;flex-wrap:wrap";
+  anchors.forEach(function (a) {
+    var k = a.textContent.trim(), ic = ICONS[k];
+    if (ic) {
+      a.setAttribute("aria-label", k); a.setAttribute("title", k);
+      a.style.cssText = "display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;background:" + ic.bg + ";text-decoration:none";
+      a.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" fill="#fff" aria-hidden="true">' + ic.svg + '</svg>';
+    }
+    p.appendChild(a);
+  });
+})();
