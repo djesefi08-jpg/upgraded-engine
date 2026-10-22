@@ -91,8 +91,8 @@ app.post("/api/login", (req, res) => {
 const str = (v, max) => String(v ?? "").trim().slice(0, max);
 const scrypt = (p, s) => new Promise((ok, no) => crypto.scrypt(String(p), s, 64, (e, k) => (e ? no(e) : ok(k))));
 const TKEY = crypto.createHash("sha256").update("clients:" + (process.env.SESSION_SECRET || ADMIN_PASSWORD)).digest();
-const makeTok = uid => {
-  const p = Buffer.from(JSON.stringify({ uid, exp: Date.now() + 60 * 864e5 })).toString("base64url");
+const makeTok = u => {
+  const p = Buffer.from(JSON.stringify({ uid: u.id, v: u.tv || 0, exp: Date.now() + 60 * 864e5 })).toString("base64url");
   return p + "." + crypto.createHmac("sha256", TKEY).update(p).digest("base64url");
 };
 const readTok = t => {
@@ -100,8 +100,9 @@ const readTok = t => {
   if (!p || !s) return null;
   const ok = crypto.createHmac("sha256", TKEY).update(p).digest("base64url");
   if (s.length !== ok.length || !crypto.timingSafeEqual(Buffer.from(s), Buffer.from(ok))) return null;
-  try { const d = JSON.parse(Buffer.from(p, "base64url").toString()); return d.exp > Date.now() ? d.uid : null; } catch { return null; }
+  try { const d = JSON.parse(Buffer.from(p, "base64url").toString()); return d.exp > Date.now() ? { uid: d.uid, v: d.v || 0 } : null; } catch { return null; }
 };
+const userOf = t => { const k = readTok(t); return k ? db.users.find(x => x.id === k.uid && (x.tv || 0) === k.v) || null : null; };
 const normIdent = v => {
   const s = String(v ?? "").trim().toLowerCase();
   if (s.includes("@")) return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? { key: s, mail: true, shown: s } : null;
@@ -109,7 +110,7 @@ const normIdent = v => {
   if (d.startsWith("225") && d.length === 13) d = d.slice(3);
   return d.length >= 8 && d.length <= 15 ? { key: d, mail: false, shown: d } : null;
 };
-const pub = u => ({ nom: u.nom, ident: u.ident, tel: u.mail ? "" : u.ident });
+const pub = u => ({ nom: u.nom, ident: u.ident, tel: u.mail ? "" : u.ident, mustChange: !!u.mustChange });
 const authHits = new Map();
 const tooMany = req => {
   const now = Date.now(), r = (authHits.get(req.ip) || []).filter(t => now - t < 900e3);
@@ -126,7 +127,7 @@ app.post("/api/register", async (req, res) => {
     const salt = crypto.randomBytes(16).toString("hex");
     const user = { id: crypto.randomBytes(6).toString("hex"), nom, key: id.key, ident: id.shown, mail: id.mail, salt, hash: (await scrypt(pw, salt)).toString("hex"), date: new Date().toISOString() };
     db.users.push(user); save();
-    res.json({ token: makeTok(user.id), user: pub(user) });
+    res.json({ token: makeTok(user), user: pub(user) });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
 });
 app.post("/api/client-login", async (req, res) => {
@@ -136,17 +137,58 @@ app.post("/api/client-login", async (req, res) => {
     const u = id && db.users.find(x => x.key === id.key);
     const ok = u && crypto.timingSafeEqual(await scrypt(pw, u.salt), Buffer.from(u.hash, "hex"));
     if (!ok) return res.status(401).json({ error: "Identifiant ou mot de passe incorrect" });
-    res.json({ token: makeTok(u.id), user: pub(u) });
+    res.json({ token: makeTok(u), user: pub(u) });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
 });
 const clientAuth = (req, res, next) => {
-  const u = db.users.find(x => x.id === readTok(req.headers["x-client-token"]));
+  const u = userOf(req.headers["x-client-token"]);
   if (!u) return res.status(401).json({ error: "Connectez-vous" });
   req.user = u; next();
 };
 app.get("/api/me", clientAuth, (req, res) => res.json(pub(req.user)));
 app.get("/api/my-orders", clientAuth, (req, res) =>
   res.json(db.orders.filter(o => o.userId === req.user.id).map(o => ({ id: o.id, date: o.date, items: o.items, total: o.total, status: o.status }))));
+
+// ---- Mot de passe oublié : le client fait une demande, le vendeur génère un mot de passe temporaire ----
+app.post("/api/forgot", (req, res) => {
+  try {
+    if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
+    const id = normIdent(req.body?.ident), u = id && db.users.find(x => x.key === id.key);
+    if (u && !u.resetRequested) {
+      u.resetRequested = new Date().toISOString();
+      db.messages.unshift({ id: crypto.randomBytes(4).toString("hex"), date: u.resetRequested, nom: u.nom, contact: u.ident, message: "🔑 Demande de nouveau mot de passe. Contactez ce client, puis allez dans Vendeur › Clients pour lui générer un mot de passe temporaire.", read: false });
+      db.messages = db.messages.slice(0, 1000); save();
+    }
+    res.json({ ok: true }); // même réponse que le compte existe ou non
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
+});
+app.post("/api/change-password", clientAuth, async (req, res) => {
+  try {
+    if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
+    const b = req.body || {}, old = String(b.old || "").slice(0, 200), nw = String(b.next || "").slice(0, 200), u = req.user;
+    if (nw.length < 6) return res.status(400).json({ error: "Le nouveau mot de passe doit avoir au moins 6 caractères" });
+    if (!crypto.timingSafeEqual(await scrypt(old, u.salt), Buffer.from(u.hash, "hex"))) return res.status(401).json({ error: "Ancien mot de passe incorrect" });
+    u.salt = crypto.randomBytes(16).toString("hex"); u.hash = (await scrypt(nw, u.salt)).toString("hex");
+    u.mustChange = false; u.tv = (u.tv || 0) + 1; save();
+    res.json({ token: makeTok(u), user: pub(u) });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
+});
+app.get("/api/users", auth, (req, res) =>
+  res.json(db.users.map(u => ({ id: u.id, nom: u.nom, ident: u.ident, mail: u.mail, date: u.date, resetRequested: !!u.resetRequested }))
+    .sort((a, b) => (b.resetRequested - a.resetRequested) || b.date.localeCompare(a.date))));
+app.post("/api/users/:id/reset", auth, async (req, res) => {
+  try {
+    const u = db.users.find(x => x.id === req.params.id);
+    if (!u) return res.status(404).json({ error: "Introuvable" });
+    const A = "abcdefghjkmnpqrstuvwxyz23456789";
+    const temp = Array.from(crypto.randomBytes(8), x => A[x % A.length]).join("");
+    u.salt = crypto.randomBytes(16).toString("hex"); u.hash = (await scrypt(temp, u.salt)).toString("hex");
+    u.mustChange = true; u.resetRequested = ""; u.tv = (u.tv || 0) + 1;
+    db.messages.forEach(m => { if (m.contact === u.ident && String(m.message).startsWith("🔑")) m.read = true; });
+    save();
+    res.json({ temp, nom: u.nom, ident: u.ident, mail: u.mail });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
+});
 
 // ---- Produits ----
 function clean(b) {
@@ -185,7 +227,7 @@ app.post("/api/checkout", async (req, res) => {
     const mobile = b.method !== "livraison";
     const operator = ["Orange Money", "MTN Money", "Moov Money", "Wave"].includes(b.operator) ? b.operator : "";
     if (mobile && !(CINETPAY_APIKEY && CINETPAY_SITE_ID)) return res.status(503).json({ error: "Le paiement mobile n’est pas encore activé. Choisissez « Payer à la livraison »." });
-    const uid = readTok(b.ct), user = uid && db.users.find(x => x.id === uid);
+    const user = userOf(b.ct);
     const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, operator, userId: user ? user.id : "", status: mobile ? "en attente de paiement" + (operator ? " · " + operator : "") : "à payer à la livraison" };
     if (mobile) {
       const [first, ...rest] = nom.split(" ");
