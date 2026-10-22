@@ -1,4 +1,4 @@
-// ---- Compte client : inscription, connexion, mot de passe oublié, mes commandes, bouton « Installer » ----
+// ---- Menu du bas, compte client (inscription, connexion, mot de passe oublié, mes commandes) et bouton « Installer » ----
 (function () {
   var KEY = "stephy_client_token", token = "", me = null, deferred = null, mode = "in";
   try { token = localStorage.getItem(KEY) || ""; } catch (e) {}
@@ -20,15 +20,53 @@
     return _api(url, method, body);
   };
 
-  // Lien « Connexion » / prénom du client dans le menu
-  var nav = document.querySelector(".nav"), acc = null;
-  if (nav) { acc = document.createElement("a"); acc.href = "#/compte"; nav.appendChild(acc); }
-  function refreshNav() { if (acc) acc.textContent = me ? "👤 " + String(me.nom).split(" ")[0] : "Connexion"; }
+  // ---- Menu propre : barre du bas façon application (Accueil, Panier, Contact, Compte) ----
+  var st = document.createElement("style");
+  st.textContent =
+    ".nav{display:none!important}" +
+    "body{padding-bottom:84px}" +
+    ".toast{bottom:96px!important}" +
+    "header,header *,#tabbar,#tabbar *,.btn{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}" +
+    "#tabbar{position:fixed;left:0;right:0;bottom:0;z-index:50;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}" +
+    "#tabbar a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 2px 6px;text-decoration:none;color:var(--mute);font-size:.72rem;font-weight:600;position:relative}" +
+    "#tabbar a.on{color:var(--acc)}" +
+    "#tabbar svg{width:24px;height:24px;fill:currentColor}" +
+    "#tabbar .bdg{position:absolute;top:2px;left:calc(50% + 6px);min-width:18px;height:18px;border-radius:9px;background:var(--acc);color:var(--acc-ink);font-size:.7rem;align-items:center;justify-content:center;padding:0 4px;display:none}";
+  document.head.appendChild(st);
+  var ICON = {
+    home: '<path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>',
+    cart: '<path d="M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96 0 1.1.9 2 2 2h12v-2H7.42c-.14 0-.25-.11-.25-.25l.03-.12.9-1.63h7.45c.75 0 1.41-.41 1.75-1.03l3.58-6.49c.08-.14.12-.31.12-.48 0-.55-.45-1-1-1H5.21l-.94-2H1zm16 16c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z"/>',
+    chat: '<path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/>',
+    user: '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>',
+    inst: '<path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>'
+  };
+  function tab(href, k, label) { return '<a href="' + href + '" data-k="' + k + '"><svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[k] + '</svg><span>' + label + '</span></a>'; }
+  var bar = document.createElement("div");
+  bar.id = "tabbar";
+  bar.innerHTML = tab("#/", "home", "Accueil") + tab("#/panier", "cart", "Panier") + tab("#/contact", "chat", "Contact") + tab("#/compte", "user", "Compte");
+  document.body.appendChild(bar);
+  var accLabel = bar.querySelector('[data-k="user"] span');
+  var bdg = document.createElement("b");
+  bdg.className = "bdg";
+  bar.querySelector('[data-k="cart"]').appendChild(bdg);
+  function syncTabs() {
+    var h = location.hash.replace(/^#\/?/, "").split("/")[0];
+    var k = h === "" || h === "p" || h === "ok" ? "home" : h === "panier" || h === "commande" ? "cart" : h === "contact" ? "chat" : h === "compte" || h === "connexion" ? "user" : "";
+    Array.prototype.forEach.call(bar.querySelectorAll("a"), function (a) { a.classList.toggle("on", a.getAttribute("data-k") === k); });
+    var n = count();
+    bdg.textContent = n; bdg.style.display = n ? "flex" : "none";
+  }
+  function refreshNav() { if (accLabel) accLabel.textContent = me ? String(me.nom).split(" ")[0] : "Compte"; }
   refreshNav();
+  // « Espace vendeur » : lien discret en bas de page (il n'est plus dans le menu des clients)
+  var ft = document.querySelector("footer");
+  if (ft) ft.insertAdjacentHTML("beforeend", '<p style="font-size:.85rem;margin-top:6px"><a href="#/vendeur" style="color:var(--mute);font-weight:400">Espace vendeur</a></p>');
   if (token) {
     capi("/api/me").then(function (u) { me = u; refreshNav(); })
       .catch(function (e) { if (e.status === 401) { save(""); refreshNav(); } });
   }
+
+  syncTabs();
 
   // Page « Mon compte » : connexion, création de compte, mot de passe oublié
   function accountPage() {
@@ -128,9 +166,9 @@
   var _render = render;
   render = function () {
     var h = location.hash.replace(/^#\/?/, "").split("/");
-    if (h[0] === "compte" || h[0] === "connexion") { document.querySelector("#cnt").textContent = count(); accountPage(); return; }
-    _render();
-    if (h[0] === "commande") afterPay();
+    if (h[0] === "compte" || h[0] === "connexion") { accountPage(); }
+    else { _render(); if (h[0] === "commande") afterPay(); }
+    syncTabs();
   };
 
   // ---- Espace vendeur : onglet « Clients » (comptes et mots de passe temporaires) ----
@@ -180,12 +218,13 @@
     } catch (err) { toast(err.message); }
   });
 
-  // Bouton « Installer l’application » (apparaît dans le menu quand Chrome permet l’installation)
+  // Bouton « Installer l’application » (apparaît dans la barre du bas quand Chrome permet l’installation)
   function addInstall() {
-    if (document.getElementById("inst") || !nav) return;
+    if (document.getElementById("inst")) return;
     if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) return;
     var a = document.createElement("a");
-    a.id = "inst"; a.href = "#"; a.textContent = "📲 Installer";
+    a.id = "inst"; a.href = "#"; a.setAttribute("data-k", "inst");
+    a.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON.inst + '</svg><span>Installer</span>';
     a.onclick = async function (ev) {
       ev.preventDefault();
       if (!deferred) return;
@@ -193,7 +232,7 @@
       try { await deferred.userChoice; } catch (e) {}
       deferred = null; a.remove();
     };
-    nav.appendChild(a);
+    bar.appendChild(a);
   }
   window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); deferred = e; addInstall(); });
   window.addEventListener("appinstalled", function () { deferred = null; var b = document.getElementById("inst"); if (b) b.remove(); });
