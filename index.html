@@ -68,7 +68,23 @@ label{font-weight:600;font-size:.9rem;display:grid;gap:4px}
 .tag{display:inline-block;background:var(--sun);color:#1d2a3a;border-radius:6px;padding:2px 8px;font-size:.8rem;font-weight:600}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;z-index:20}
 .actions{display:flex;gap:6px;flex-wrap:wrap}
-@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}header .nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  text-decoration: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+header .nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
 </style>
 </head>
 <body>
