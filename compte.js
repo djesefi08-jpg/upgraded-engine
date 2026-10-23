@@ -94,12 +94,12 @@
     });
   }
 
-  // Mot de passe oublié : le client envoie une demande, le vendeur lui donne un mot de passe temporaire
+  // Mot de passe oublié : étape 1 = le client donne son téléphone ou e-mail et reçoit un code
   function forgotPage() {
     $("#app").innerHTML = '<h1>Mot de passe oublié</h1>' +
-      '<p class="muted">Entrez le téléphone ou l’e-mail de votre compte. Le vendeur vous contactera pour vous donner un mot de passe temporaire.</p>' +
+      '<p class="muted">Entrez le téléphone ou l’e-mail de votre compte. Nous vous envoyons un code à 6 chiffres.</p>' +
       '<form class="f" id="ff"><label>Téléphone ou e-mail<input name="ident" required maxlength="120" autocomplete="username"></label>' +
-      '<button class="btn" type="submit">Envoyer la demande</button></form>' +
+      '<button class="btn" type="submit">Envoyer le code</button></form>' +
       '<p><a href="#" id="bk">Retour à la connexion</a></p>';
     $("#bk").onclick = function (e) { e.preventDefault(); mode = "in"; accountPage(); };
     $("#ff").addEventListener("submit", async function (e) {
@@ -107,13 +107,41 @@
       var ident = new FormData(e.target).get("ident"), btn = e.target.querySelector("button[type=submit]");
       btn.disabled = true;
       try {
-        await capi("/api/forgot", "POST", { ident: ident });
+        var d = await capi("/api/forgot", "POST", { ident: ident });
+        if (d.auto) return codePage(ident);
+        // Envoi automatique non activé : la demande est transmise au vendeur (ancien fonctionnement)
         var wa = document.querySelector('footer a[href*="wa.me"]');
         var link = wa ? '<p><a class="btn" target="_blank" rel="noopener" href="' + esc(wa.getAttribute("href").split("?")[0]) + '?text=' +
           encodeURIComponent("Bonjour, j’ai oublié mon mot de passe. Mon compte : " + ident) + '">Écrire au vendeur sur WhatsApp</a></p>' : "";
         $("#app").innerHTML = '<div class="ok"><h1>Demande envoyée</h1><p>Le vendeur va vous contacter pour vous donner un mot de passe temporaire. Vous pourrez ensuite le changer dans « Mon compte ».</p>' + link +
           '<p><a class="btn alt" href="#/" >Retour à la boutique</a></p></div>';
         mode = "in";
+      } catch (err) { toast(err.message); btn.disabled = false; }
+    });
+  }
+
+  // Étape 2 = le client saisit le code reçu et choisit son nouveau mot de passe
+  function codePage(ident) {
+    var by = String(ident).indexOf("@") > -1 ? "par e-mail" : "par SMS";
+    $("#app").innerHTML = '<h1>Entrez le code</h1>' +
+      '<p class="muted">Si ce compte existe, un code à 6 chiffres vient d’être envoyé ' + by + ' (valable 10 minutes).</p>' +
+      '<form class="f" id="cf">' +
+      '<label>Code reçu<input name="code" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" style="letter-spacing:.3em;text-align:center;font-size:1.3rem"></label>' +
+      '<label>Nouveau mot de passe (6 caractères minimum)<input name="password" type="password" required minlength="6" autocomplete="new-password"></label>' +
+      '<button class="btn" type="submit">Changer mon mot de passe</button></form>' +
+      '<p><a href="#" id="rs">Renvoyer le code</a> · <a href="#" id="bk">Retour</a></p>';
+    $("#bk").onclick = function (e) { e.preventDefault(); mode = "in"; accountPage(); };
+    $("#rs").onclick = async function (e) {
+      e.preventDefault();
+      try { await capi("/api/forgot", "POST", { ident: ident }); toast("Nouveau code envoyé"); } catch (err) { toast(err.message); }
+    };
+    $("#cf").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var f = new FormData(e.target), btn = e.target.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        var d = await capi("/api/forgot-reset", "POST", { ident: ident, code: f.get("code"), password: f.get("password") });
+        save(d.token); me = d.user; mode = "in"; refreshNav(); toast("Mot de passe changé, vous êtes connecté"); accountPage();
       } catch (err) { toast(err.message); btn.disabled = false; }
     });
   }
