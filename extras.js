@@ -1,273 +1,195 @@
-import express from "express";
-import fs from "fs";
-import path from "path";
-import crypto from "crypto";
-import { fileURLToPath } from "url";
-import Stripe from "stripe";
+(function () {
+  // ---- Lien « Contact » dans le menu ----
+  var nav = document.querySelector(".nav");
+  if (nav) { var link = document.createElement("a"); link.href = "#/contact"; link.textContent = "Contact"; nav.appendChild(link); }
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { ADMIN_PASSWORD, CINETPAY_APIKEY, CINETPAY_SITE_ID, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, BASE_URL = "http://localhost:3000", PORT = 3000 } = process.env;
-if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 8) {
-  console.error("Définis ADMIN_PASSWORD (8 caractères minimum) dans le fichier .env");
-  process.exit(1);
-}
-// ---- Coordonnées affichées en bas de la boutique (modifie ici si elles changent) ----
-const CONTACT = {
-  email: "djesefi08@gmail.com",
-  phone: "+2250585276093",
-  whatsapp: "2250585276093",
-  tiktok: "https://www.tiktok.com/@stephylamerveille08",
-};
-const FOOTER = `<footer><p>Une question ? Écrivez-nous :</p><p><a href="mailto:${CONTACT.email}">E-mail</a> · <a href="tel:${CONTACT.phone}">Appeler</a> · <a href="https://wa.me/${CONTACT.whatsapp}" target="_blank" rel="noopener">WhatsApp</a> · <a href="${CONTACT.tiktok}" target="_blank" rel="noopener">TikTok</a></p></footer>`;
-// extras.js et compte.js sont ajoutés à la page ; s'ils manquent, la boutique marche quand même
-const readScripts = () => ["extras.js", "compte.js"].map(n => { try { return fs.readFileSync(path.join(__dirname, n), "utf8"); } catch { return ""; } })
-  .filter(Boolean).map(x => "<script>" + x + "</script>").join("");
-const page = () => {
-  const h = fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/<footer>[\s\S]*?<\/footer>/, () => FOOTER);
-  const x = readScripts();
-  return x ? h.replace("</body>", () => x + "</body>") : h;
-};
+  // ---- Classement du catalogue par catégorie (ordre alphabétique, produits de A à Z) ----
+  var _grid = grid;
+  grid = function (list) {
+    if (!list.length) return _grid(list);
+    var groups = {};
+    list.forEach(function (p) { var c = p.cat || "Autres"; (groups[c] = groups[c] || []).push(p); });
+    return Object.keys(groups).sort(function (a, b) { return a.localeCompare(b, "fr"); }).map(function (c) {
+      var items = groups[c].slice().sort(function (a, b) { return a.name.localeCompare(b.name, "fr"); });
+      return '<h2 style="grid-column:1/-1;margin:.9em 0 .1em;font-size:1.3rem;border-bottom:2px solid var(--sun);padding-bottom:4px">' + esc(c) +
+        ' <span class="muted" style="font-weight:400;font-size:.9rem">(' + items.length + ')</span></h2>' + _grid(items);
+    }).join("");
+  };
 
-const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
-
-// ---- Données (fichier JSON : suffisant pour une petite boutique) ----
-const SEED = [
-  ["Bol en grès", 12000, "Maison", "🥣", "Bol tourné à la main, émail bleu nuit."],
-  ["Bougie au figuier", 16000, "Maison", "🕯️", "Cire de soja, 40 h de combustion."],
-  ["Tote bag en lin", 19000, "Mode", "👜", "Lin lavé, poche intérieure zippée."],
-  ["Écharpe en laine", 30000, "Mode", "🧣", "Laine mérinos douce, coloris sauge."],
-  ["Miel de fleurs", 6000, "Épicerie", "🍯", "Pot de 250 g, apiculteur local."],
-  ["Café en grains", 8000, "Épicerie", "☕", "Torréfaction artisanale, 500 g."],
-  ["Carnet cousu main", 9000, "Papeterie", "📓", "96 pages unies, papier recyclé."],
-  ["Set de 3 crayons", 4500, "Papeterie", "✏️", "Bois certifié FSC, gomme intégrée."],
-].map(([name, price, cat, emoji, desc], i) => ({ id: i + 1, name, price, cat, emoji, desc, img: "" }));
-const DIR = path.join(__dirname, "data"), FILE = path.join(DIR, "db.json");
-fs.mkdirSync(DIR, { recursive: true });
-let db = fs.existsSync(FILE) ? JSON.parse(fs.readFileSync(FILE, "utf8")) : { products: SEED, orders: [], nid: SEED.length + 1 };
-db.messages = db.messages || [];
-db.users = db.users || [];
-const save = () => { fs.writeFileSync(FILE + ".tmp", JSON.stringify(db)); fs.renameSync(FILE + ".tmp", FILE); };
-save();
-
-const app = express();
-app.disable("x-powered-by");
-app.set("trust proxy", 1);
-
-// ---- Webhook Stripe (corps brut, avant express.json) ----
-app.post("/api/webhook", express.raw({ type: "application/json" }), (req, res) => {
-  if (!stripe || !STRIPE_WEBHOOK_SECRET) return res.sendStatus(400);
-  let ev;
-  try { ev = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], STRIPE_WEBHOOK_SECRET); }
-  catch { return res.sendStatus(400); }
-  if (ev.type === "checkout.session.completed") {
-    const o = db.orders.find(x => x.id === ev.data.object.metadata?.orderId);
-    if (o) { o.status = "payée"; save(); }
-  }
-  res.sendStatus(200);
-});
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: false }));
-
-// ---- Authentification vendeur ----
-const sessions = new Map(), attempts = new Map();
-const sha = s => crypto.createHash("sha256").update(String(s)).digest();
-const auth = (req, res, next) => {
-  const t = (req.headers.authorization || "").replace("Bearer ", "");
-  if ((sessions.get(t) || 0) < Date.now()) return res.status(401).json({ error: "Non autorisé" });
-  next();
-};
-app.post("/api/login", (req, res) => {
-  const a = attempts.get(req.ip) || { n: 0, reset: Date.now() + 15 * 60e3 };
-  if (Date.now() > a.reset) { a.n = 0; a.reset = Date.now() + 15 * 60e3; }
-  if (++a.n > 10) { attempts.set(req.ip, a); return res.status(429).json({ error: "Trop d'essais, réessayez plus tard" }); }
-  attempts.set(req.ip, a);
-  if (!crypto.timingSafeEqual(sha(req.body?.password), sha(ADMIN_PASSWORD))) return res.status(401).json({ error: "Mot de passe incorrect" });
-  const token = crypto.randomBytes(24).toString("hex");
-  sessions.set(token, Date.now() + 12 * 3600e3);
-  res.json({ token });
-});
-
-// ---- Comptes clients : inscription, connexion, mes commandes ----
-const str = (v, max) => String(v ?? "").trim().slice(0, max);
-const scrypt = (p, s) => new Promise((ok, no) => crypto.scrypt(String(p), s, 64, (e, k) => (e ? no(e) : ok(k))));
-const TKEY = crypto.createHash("sha256").update("clients:" + (process.env.SESSION_SECRET || ADMIN_PASSWORD)).digest();
-const makeTok = uid => {
-  const p = Buffer.from(JSON.stringify({ uid, exp: Date.now() + 60 * 864e5 })).toString("base64url");
-  return p + "." + crypto.createHmac("sha256", TKEY).update(p).digest("base64url");
-};
-const readTok = t => {
-  const [p, s] = String(t || "").split(".");
-  if (!p || !s) return null;
-  const ok = crypto.createHmac("sha256", TKEY).update(p).digest("base64url");
-  if (s.length !== ok.length || !crypto.timingSafeEqual(Buffer.from(s), Buffer.from(ok))) return null;
-  try { const d = JSON.parse(Buffer.from(p, "base64url").toString()); return d.exp > Date.now() ? d.uid : null; } catch { return null; }
-};
-const normIdent = v => {
-  const s = String(v ?? "").trim().toLowerCase();
-  if (s.includes("@")) return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? { key: s, mail: true, shown: s } : null;
-  let d = s.replace(/\D/g, "");
-  if (d.startsWith("225") && d.length === 13) d = d.slice(3);
-  return d.length >= 8 && d.length <= 15 ? { key: d, mail: false, shown: d } : null;
-};
-const pub = u => ({ nom: u.nom, ident: u.ident, tel: u.mail ? "" : u.ident });
-const authHits = new Map();
-const tooMany = req => {
-  const now = Date.now(), r = (authHits.get(req.ip) || []).filter(t => now - t < 900e3);
-  if (r.length >= 20) return true;
-  r.push(now); authHits.set(req.ip, r); return false;
-};
-app.post("/api/register", async (req, res) => {
-  try {
-    if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
-    const b = req.body || {}, nom = str(b.nom, 100), id = normIdent(b.ident), pw = String(b.password || "").slice(0, 200);
-    if (!nom || !id) return res.status(400).json({ error: "Entrez votre nom et un numéro de téléphone ou un e-mail valide" });
-    if (pw.length < 6) return res.status(400).json({ error: "Le mot de passe doit avoir au moins 6 caractères" });
-    if (db.users.some(u => u.key === id.key)) return res.status(409).json({ error: "Ce numéro ou cet e-mail a déjà un compte. Connectez-vous." });
-    const salt = crypto.randomBytes(16).toString("hex");
-    const user = { id: crypto.randomBytes(6).toString("hex"), nom, key: id.key, ident: id.shown, mail: id.mail, salt, hash: (await scrypt(pw, salt)).toString("hex"), date: new Date().toISOString() };
-    db.users.push(user); save();
-    res.json({ token: makeTok(user.id), user: pub(user) });
-  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
-});
-app.post("/api/client-login", async (req, res) => {
-  try {
-    if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
-    const b = req.body || {}, id = normIdent(b.ident), pw = String(b.password || "").slice(0, 200);
-    const u = id && db.users.find(x => x.key === id.key);
-    const ok = u && crypto.timingSafeEqual(await scrypt(pw, u.salt), Buffer.from(u.hash, "hex"));
-    if (!ok) return res.status(401).json({ error: "Identifiant ou mot de passe incorrect" });
-    res.json({ token: makeTok(u.id), user: pub(u) });
-  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
-});
-const clientAuth = (req, res, next) => {
-  const u = db.users.find(x => x.id === readTok(req.headers["x-client-token"]));
-  if (!u) return res.status(401).json({ error: "Connectez-vous" });
-  req.user = u; next();
-};
-app.get("/api/me", clientAuth, (req, res) => res.json(pub(req.user)));
-app.get("/api/my-orders", clientAuth, (req, res) =>
-  res.json(db.orders.filter(o => o.userId === req.user.id).map(o => ({ id: o.id, date: o.date, items: o.items, total: o.total, status: o.status }))));
-
-// ---- Produits ----
-function clean(b) {
-  const price = Number(b.price);
-  if (!str(b.name, 80) || !str(b.cat, 40) || !(price >= 0 && price <= 100000)) return null;
-  const d = { name: str(b.name, 80), price: Math.round(price / 5) * 5, cat: str(b.cat, 40), emoji: str(b.emoji, 4) || "📦", desc: str(b.desc, 500) };
-  if (typeof b.img === "string" && b.img.startsWith("data:image/") && b.img.length < 600000) d.img = b.img;
-  return d;
-}
-app.get("/api/products", (req, res) => res.json(db.products));
-app.post("/api/products", auth, (req, res) => {
-  const d = clean(req.body); if (!d) return res.status(400).json({ error: "Champs invalides" });
-  const p = { id: db.nid++, img: "", ...d }; db.products.push(p); save(); res.json(p);
-});
-app.put("/api/products/:id", auth, (req, res) => {
-  const p = db.products.find(x => x.id === +req.params.id); if (!p) return res.status(404).json({ error: "Introuvable" });
-  const d = clean(req.body); if (!d) return res.status(400).json({ error: "Champs invalides" });
-  Object.assign(p, d); save(); res.json(p);
-});
-app.delete("/api/products/:id", auth, (req, res) => {
-  db.products = db.products.filter(x => x.id !== +req.params.id); save(); res.json({ ok: true });
-});
-
-// ---- Commandes ----
-app.get("/api/orders", auth, (req, res) => res.json(db.orders));
-app.post("/api/checkout", async (req, res) => {
-  try {
-    const b = req.body || {}, nom = str(b.nom, 100), adr = str(b.adr, 300), tel = str(b.tel, 30);
-    if (!nom || !adr || tel.length < 6) return res.status(400).json({ error: "Complétez le formulaire" });
-    const items = (Array.isArray(b.items) ? b.items : []).slice(0, 50).map(i => {
-      const p = db.products.find(x => x.id === +i.id), q = Math.floor(+i.q);
-      return p && q >= 1 && q <= 99 ? { name: p.name, price: p.price, q } : null;
-    }).filter(Boolean);
-    if (!items.length) return res.status(400).json({ error: "Panier vide" });
-    const total = Math.round(items.reduce((a, i) => a + i.price * i.q, 0));
-    const mobile = b.method !== "livraison";
-    const operator = ["Orange Money", "MTN Money", "Moov Money", "Wave"].includes(b.operator) ? b.operator : "";
-    if (mobile && !(CINETPAY_APIKEY && CINETPAY_SITE_ID)) return res.status(503).json({ error: "Le paiement mobile n’est pas encore activé. Choisissez « Payer à la livraison »." });
-    const uid = readTok(b.ct), user = uid && db.users.find(x => x.id === uid);
-    const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, operator, userId: user ? user.id : "", status: mobile ? "en attente de paiement" + (operator ? " · " + operator : "") : "à payer à la livraison" };
-    if (mobile) {
-      const [first, ...rest] = nom.split(" ");
-      const r = await fetch("https://api-checkout.cinetpay.com/v2/payment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "User-Agent": "stephy-boutique/1.0" },
-        body: JSON.stringify({
-          apikey: CINETPAY_APIKEY, site_id: CINETPAY_SITE_ID, transaction_id: order.id,
-          amount: total, currency: "XOF", description: "Commande " + order.id, lang: "fr",
-          channels: "MOBILE_MONEY",
-          notify_url: `${BASE_URL}/api/cinetpay-notify`, return_url: `${BASE_URL}/retour?order=${order.id}`,
-          customer_name: first, customer_surname: rest.join(" ") || first, customer_phone_number: tel,
-          customer_address: adr, customer_city: "CI", customer_country: "CI", customer_state: "CI", customer_zip_code: "00225",
-        }),
-      });
-      const j = await r.json();
-      if (j.code !== "201" || !j.data?.payment_url) { console.error("CinetPay:", j); return res.status(502).json({ error: "Paiement indisponible, réessayez plus tard" }); }
-      db.orders.unshift(order); save();
-      return res.json({ id: order.id, url: j.data.payment_url });
+  // ---- Accueil : recherche tout en haut, filtres pliables, section « Nouveautés » ----
+  var _home = home;
+  home = function () {
+    _home();
+    var app = document.querySelector("#app"), f = document.querySelector(".filters"), g = document.querySelector("#grid");
+    if (!app || !f || !g) return;
+    // Barre de recherche au tout début de la page ; catégorie et prix dans un volet « Filtres »
+    var det = document.createElement("details");
+    det.style.cssText = "grid-column:1/-1";
+    det.innerHTML = '<summary style="cursor:pointer;font-weight:600;padding:4px 0">Filtres : catégorie et prix</summary><div class="fbox" style="display:grid;gap:8px;margin-top:8px"></div>';
+    var box = det.querySelector(".fbox");
+    ["fc", "fmin", "fmax"].forEach(function (id) { var el = document.getElementById(id); if (el) box.appendChild(el); });
+    f.appendChild(det);
+    f.style.gridTemplateColumns = "1fr";
+    app.prepend(f);
+    // Section « Nouveautés » (4 derniers produits) juste avant le catalogue
+    if (S.products.length > 4) {
+      var latest = S.products.slice().sort(function (a, b) { return b.id - a.id; }).slice(0, 4);
+      var s = document.createElement("section");
+      s.id = "news";
+      s.innerHTML = '<h2 style="margin:.2em 0 .6em;font-size:1.4rem">Nouveautés</h2><div class="grid">' + _grid(latest) + '</div><h2 style="margin:1.4em 0 .6em;font-size:1.4rem">Tous les produits</h2>';
+      g.before(s);
     }
-    db.orders.unshift(order); save();
-    res.json({ id: order.id });
-  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur lors de la commande" }); }
-});
+    // Pendant une recherche ou un filtre, on cache le logo et les nouveautés pour voir les résultats tout de suite
+    function toggle() {
+      var active = ["fq", "fc", "fmin", "fmax"].some(function (id) { var el = document.getElementById(id); return el && el.value; });
+      var fc = document.getElementById("fc");
+      det.open = !!(fc && (fc.value || document.getElementById("fmin").value || document.getElementById("fmax").value));
+      [".hero", "#app > h1", "#news"].forEach(function (sel) { var el = document.querySelector(sel); if (el) el.style.display = active ? "none" : ""; });
+    }
+    ["fq", "fc", "fmin", "fmax"].forEach(function (id) { var el = document.getElementById(id); if (el) el.addEventListener("input", toggle); });
+    toggle();
+  };
 
-// ---- Messages : tout le monde peut écrire, seul le vendeur connecté peut lire ----
-const msgHits = new Map();
-app.post("/api/messages", (req, res) => {
-  const b = req.body || {};
-  if (b.website) return res.json({ ok: true }); // champ piège pour les robots
-  const now = Date.now(), recent = (msgHits.get(req.ip) || []).filter(t => now - t < 3600e3);
-  if (recent.length >= 5) return res.status(429).json({ error: "Trop de messages, réessayez plus tard" });
-  const nom = str(b.nom, 100), contact = str(b.contact, 120), message = str(b.message, 2000);
-  if (!nom || !contact || message.length < 2) return res.status(400).json({ error: "Complétez le formulaire" });
-  recent.push(now); msgHits.set(req.ip, recent);
-  db.messages.unshift({ id: crypto.randomBytes(4).toString("hex"), date: new Date().toISOString(), nom, contact, message, read: false });
-  db.messages = db.messages.slice(0, 1000);
-  save(); res.json({ ok: true });
-});
-app.get("/api/messages", auth, (req, res) => res.json(db.messages));
-app.put("/api/messages/:id/read", auth, (req, res) => {
-  const m = db.messages.find(x => x.id === req.params.id);
-  if (!m) return res.status(404).json({ error: "Introuvable" });
-  m.read = req.body?.read !== false; save(); res.json(m);
-});
-app.delete("/api/messages/:id", auth, (req, res) => {
-  db.messages = db.messages.filter(x => x.id !== req.params.id); save(); res.json({ ok: true });
-});
-
-// ---- Mobile money (CinetPay : Orange Money, MTN, Moov, Wave) ----
-async function cinetpayCheck(order) {
-  const r = await fetch("https://api-checkout.cinetpay.com/v2/payment/check", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "User-Agent": "stephy-boutique/1.0" },
-    body: JSON.stringify({ apikey: CINETPAY_APIKEY, site_id: CINETPAY_SITE_ID, transaction_id: order.id }),
-  });
-  const j = await r.json();
-  if (j.code === "00" && j.data?.status === "ACCEPTED" && Number(j.data.amount) === order.total) {
-    if (!String(order.status).startsWith("payée")) { order.status = "payée" + (order.operator ? " · " + order.operator : ""); save(); }
-    return true;
+  // ---- Page « Contact » : formulaire pour écrire au vendeur ----
+  function contactPage() {
+    $("#app").innerHTML = '<h1>Contact</h1><p class="muted">Écrivez-nous, nous vous répondons dès que possible.</p>' +
+      '<form class="f" id="mf">' +
+      '<label>Votre nom<input name="nom" required maxlength="100" autocomplete="name"></label>' +
+      '<label>Téléphone ou e-mail (pour vous répondre)<input name="contact" required maxlength="120"></label>' +
+      '<label>Message<textarea name="message" rows="5" required maxlength="2000"></textarea></label>' +
+      '<input name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">' +
+      '<button class="btn" type="submit">Envoyer le message</button></form>';
+    $("#mf").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var f = new FormData(e.target), btn = e.target.querySelector("button");
+      btn.disabled = true;
+      try {
+        await api("/api/messages", "POST", { nom: f.get("nom"), contact: f.get("contact"), message: f.get("message"), website: f.get("website") });
+        $("#app").innerHTML = '<div class="ok"><h1>Message envoyé</h1><p>Merci ! Nous vous répondrons dès que possible.</p><a class="btn" href="#/">Retour à la boutique</a></div>';
+      } catch (err) { toast(err.message); btn.disabled = false; }
+    });
   }
-  if (j.data?.status === "REFUSED" && !String(order.status).startsWith("payée")) { order.status = "paiement refusé"; save(); }
-  return false;
-}
-app.get("/api/cinetpay-notify", (req, res) => res.sendStatus(200));
-app.post("/api/cinetpay-notify", async (req, res) => {
-  try {
-    const o = db.orders.find(x => x.id === String(req.body?.cpm_trans_id || ""));
-    if (o && CINETPAY_APIKEY) await cinetpayCheck(o);
-  } catch (e) { console.error(e); }
-  res.sendStatus(200);
-});
-app.all("/retour", async (req, res) => {
-  const id = String(req.query.order || "").replace(/[^A-Za-z0-9]/g, "");
-  const o = db.orders.find(x => x.id === id);
-  let ok = false;
-  try { if (o && CINETPAY_APIKEY) ok = await cinetpayCheck(o); } catch (e) { console.error(e); }
-  res.redirect(303, ok ? `/#/ok/${id}` : "/#/panier");
-});
 
-const PUBLIC = ["manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png", "maskable-192.png", "maskable-512.png"];
-app.get(["/", "/index.html"], (req, res) => res.type("html").send(page()));
-for (const f of PUBLIC) app.get("/" + f, (req, res) => res.sendFile(path.join(__dirname, f)));
-app.use((err, req, res, next) => res.status(400).json({ error: "Requête invalide" }));
-app.listen(PORT, () => console.log(`Boutique prête sur http://localhost:${PORT}`));
+  // ---- Page « Paiement » : récapitulatif, livraison et choix du paiement (mobile money) ----
+  function payPage() {
+    if (!count()) { location.hash = "#/panier"; return; }
+    var lines = cartItems().map(function (x) {
+      return '<div class="row"><div class="grow"><strong>' + esc(x.p.name) + '</strong><div class="muted">' + x.q + ' × ' + eur(x.p.price) + '</div></div><strong>' + eur(x.p.price * x.q) + '</strong></div>';
+    }).join("");
+    var ops = [["Orange Money", "#ff7900"], ["MTN Money", "#f5b800"], ["Moov Money", "#0072bc"], ["Wave", "#1dc8ff"]];
+    var optStyle = 'display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card);font-size:1rem;font-weight:600';
+    var radios = ops.map(function (o, i) {
+      return '<label style="' + optStyle + '"><input type="radio" name="op" value="' + o[0] + '"' + (i === 0 ? " checked" : "") + ' style="width:auto;padding:0">' +
+        '<span style="width:14px;height:14px;border-radius:50%;background:' + o[1] + ';display:inline-block"></span>' + o[0] + '</label>';
+    }).join("");
+    $("#app").innerHTML = '<h1>Paiement</h1><h2>Votre commande</h2>' + lines +
+      '<div class="total"><span>Total à payer</span><span>' + eur(total()) + '</span></div>' +
+      '<form class="f" id="pf2"><h2>Livraison</h2>' +
+      '<label>Nom complet<input name="nom" required autocomplete="name"></label>' +
+      '<label>Adresse de livraison<textarea name="adr" rows="3" required autocomplete="street-address"></textarea></label>' +
+      '<label>Numéro de téléphone<input name="tel" type="tel" required autocomplete="tel" pattern="[0-9 +().-]{6,}"></label>' +
+      '<h2>Mode de paiement</h2>' + radios +
+      '<label style="' + optStyle + '"><input type="radio" name="op" value="livraison" style="width:auto;padding:0">Payer à la livraison</label>' +
+      '<p class="muted">Pour le mobile money, vous serez dirigé vers la page sécurisée de paiement pour valider avec votre code.</p>' +
+      '<button class="btn" type="submit">Payer ' + eur(total()) + '</button></form>';
+    $("#pf2").addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var f = new FormData(ev.target), btn = ev.target.querySelector("button[type=submit]");
+      var op = f.get("op"), cash = op === "livraison";
+      btn.disabled = true; btn.textContent = "Veuillez patienter…";
+      try {
+        var d = await api("/api/checkout", "POST", {
+          nom: f.get("nom"), adr: f.get("adr"), tel: f.get("tel"),
+          method: cash ? "livraison" : "mobile", operator: cash ? "" : op,
+          items: Object.entries(S.cart).map(function (kv) { return { id: +kv[0], q: kv[1] }; })
+        });
+        if (d.url) location.href = d.url; else location.hash = "#/ok/" + d.id;
+      } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = "Payer " + eur(total()); }
+    });
+  }
+  var _render = render;
+  render = function () {
+    var h = location.hash.replace(/^#\/?/, "").split("/");
+    if (h[0] === "contact") { document.querySelector("#cnt").textContent = count(); contactPage(); }
+    else if (h[0] === "commande") { document.querySelector("#cnt").textContent = count(); payPage(); }
+    else _render();
+  };
+
+  // ---- Espace vendeur : onglet « Messages » (réservé au vendeur connecté) ----
+  function contactLink(c) {
+    var v = String(c).trim();
+    if (v.indexOf("@") > -1) return '<a href="mailto:' + esc(v) + '">' + esc(v) + '</a>';
+    var d = v.replace(/[^0-9+]/g, "");
+    return d.length >= 6 ? '<a href="tel:' + esc(d) + '">' + esc(v) + '</a>' : esc(v);
+  }
+  function msgCard(m) {
+    return '<div class="row" style="display:block"><strong>' + esc(m.nom) + '</strong> ' + (m.read ? "" : '<span class="tag">Nouveau</span>') +
+      '<br><span class="muted">' + new Date(m.date).toLocaleString("fr-FR") + '</span><br>' + contactLink(m.contact) +
+      '<p style="white-space:pre-wrap;margin:.6em 0">' + esc(m.message) + '</p>' +
+      '<div class="actions"><button class="btn alt sm" data-mread="' + m.id + '" data-to="' + (m.read ? "0" : "1") + '">' + (m.read ? "Marquer non lu" : "Marquer comme lu") + '</button>' +
+      '<button class="btn del sm" data-mdel="' + m.id + '">Supprimer</button></div></div>';
+  }
+  async function messagesPage() {
+    var list = [];
+    try { list = await api("/api/messages"); } catch (err) { TOKEN = ""; toast("Session expirée"); return vendor(); }
+    var unread = list.filter(function (m) { return !m.read; }).length;
+    var tabs = '<div class="tabs"><button class="btn alt" data-tab="produits">Produits (' + S.products.length + ')</button>' +
+      '<button class="btn alt" data-tab="commandes">Commandes</button>' +
+      '<button class="btn" data-tab="messages">Messages' + (unread ? " (" + unread + ")" : "") + '</button></div>';
+    $("#app").innerHTML = '<h1>Messages</h1>' + tabs + (list.length ? list.map(msgCard).join("") : '<p class="empty">Aucun message pour l’instant.</p>');
+  }
+  function addMsgTab() {
+    var t = document.querySelector(".tabs");
+    if (!t || t.querySelector("[data-tab=messages]")) return;
+    var b = document.createElement("button");
+    b.className = "btn alt"; b.setAttribute("data-tab", "messages"); b.textContent = "Messages";
+    t.appendChild(b);
+    api("/api/messages").then(function (l) {
+      var n = l.filter(function (m) { return !m.read; }).length;
+      b.textContent = "Messages" + (n ? " (" + n + ")" : "");
+    }).catch(function () {});
+  }
+  var _vendor = vendor;
+  vendor = async function (tab) {
+    if (tab === "messages" && TOKEN) return messagesPage();
+    await _vendor(tab);
+    if (TOKEN) addMsgTab();
+  };
+  document.addEventListener("click", async function (ev) {
+    var t = ev.target.closest("[data-mread],[data-mdel]");
+    if (!t) return;
+    try {
+      if (t.dataset.mread) await api("/api/messages/" + t.dataset.mread + "/read", "PUT", { read: t.dataset.to === "1" });
+      else if (confirm("Supprimer ce message ?")) await api("/api/messages/" + t.dataset.mdel, "DELETE");
+      else return;
+      messagesPage();
+    } catch (err) { toast(err.message); }
+  });
+})();
+
+// ---- Pied de page : logos cliquables (E-mail, Appeler, WhatsApp, TikTok) à la place des mots ----
+(function () {
+  var PHONE = '<path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>';
+  var ICONS = {
+    "E-mail": { bg: "#c9a45c", svg: '<path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>' },
+    "Appeler": { bg: "#1b7f55", svg: PHONE },
+    "WhatsApp": { bg: "#25D366", svg: '<path d="M12 3.2a8.8 8.8 0 0 0-7.5 13.4L3.2 20.8l4.3-1.2A8.8 8.8 0 1 0 12 3.2z" fill="none" stroke="#fff" stroke-width="1.7" stroke-linejoin="round"/><g transform="translate(7.2 7.2) scale(.4)">' + PHONE + '</g>' },
+    "TikTok": { bg: "#000000", svg: '<path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z"/>' }
+  };
+  var f = document.querySelector("footer");
+  if (!f) return;
+  var ps = f.querySelectorAll("p"), p = ps[ps.length - 1];
+  if (!p) return;
+  var anchors = Array.prototype.slice.call(p.querySelectorAll("a"));
+  p.innerHTML = "";
+  p.style.cssText = "display:flex;justify-content:center;gap:14px;flex-wrap:wrap";
+  anchors.forEach(function (a) {
+    var k = a.textContent.trim(), ic = ICONS[k];
+    if (ic) {
+      a.setAttribute("aria-label", k); a.setAttribute("title", k);
+      a.style.cssText = "display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;background:" + ic.bg + ";text-decoration:none";
+      a.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" fill="#fff" aria-hidden="true">' + ic.svg + '</svg>';
+    }
+    p.appendChild(a);
+  });
+})();
