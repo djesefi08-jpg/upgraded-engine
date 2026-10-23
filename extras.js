@@ -76,11 +76,11 @@
     var lines = cartItems().map(function (x) {
       return '<div class="row"><div class="grow"><strong>' + esc(x.p.name) + '</strong><div class="muted">' + x.q + ' × ' + eur(x.p.price) + '</div></div><strong>' + eur(x.p.price * x.q) + '</strong></div>';
     }).join("");
-        var ops = [["Orange Money", "orange"], ["MTN Money", "mtn"], ["Moov Money", "moov"], ["Wave", "wave"]];
-    var optStyle = 'display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card);font-size:1rem;font-weight:600;';
+        var ops = [["Orange Money", "#ff7900"], ["MTN Money", "#f5b800"], ["Moov Money", "#0072bc"], ["Wave", "#1dc8ff"]];
+    var optStyle = 'display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card);font-size:1rem;font-weight:600';
     var radios = ops.map(function (o, i) {
-      return '<label style="' + optStyle + '"><input type="radio" name="op" value="' + o[0] + '"' + (i === 0 ? ' checked' : '') + ' style="width:auto;padding:0">' +
-        '<img src="/logos/' + o[1] + '.png" alt="' + o[0] + '" style="width:44px;height:44px;border-radius:10px;object-fit:contain;background:#fff;border:1px solid #eee">' +
+      return '<label style="' + optStyle + '"><input type="radio" name="op" value="' + o[0] + '"' + (i === 0 ? " checked" : "") + ' style="width:auto;padding:0">' +
+        '<span style="width:14px;height:14px;border-radius:50%;background:' + o[1] + ';display:inline-block"></span>' + o[0] + '</label>';
         o[0] + '</label>';
     }).join("");
     }).join("");
