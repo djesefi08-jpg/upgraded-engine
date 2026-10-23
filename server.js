@@ -6,7 +6,13 @@ import { fileURLToPath } from "url";
 import Stripe from "stripe";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { ADMIN_PASSWORD, CINETPAY_APIKEY, CINETPAY_SITE_ID, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, BASE_URL = "http://localhost:3000", PORT = 3000 } = process.env;
+const {
+  ADMIN_PASSWORD, CINETPAY_APIKEY, CINETPAY_SITE_ID, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+  BASE_URL = "http://localhost:3000", PORT = 3000,
+  // Envoi du code temporaire (facultatif : sans ces réglages, la demande va au vendeur comme avant)
+  BREVO_API_KEY, MAIL_FROM,                       // e-mail (Brevo)
+  INFOBIP_BASE_URL, INFOBIP_API_KEY, SMS_SENDER = "Stephy", // SMS (Infobip : Orange, MTN, Moov)
+} = process.env;
 if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 8) {
   console.error("Définis ADMIN_PASSWORD (8 caractères minimum) dans le fichier .env");
   process.exit(1);
@@ -149,17 +155,80 @@ app.get("/api/me", clientAuth, (req, res) => res.json(pub(req.user)));
 app.get("/api/my-orders", clientAuth, (req, res) =>
   res.json(db.orders.filter(o => o.userId === req.user.id).map(o => ({ id: o.id, date: o.date, items: o.items, total: o.total, status: o.status }))));
 
-// ---- Mot de passe oublié : le client fait une demande, le vendeur génère un mot de passe temporaire ----
-app.post("/api/forgot", (req, res) => {
+// ---- Mot de passe oublié : code temporaire à 6 chiffres envoyé par e-mail ou SMS ----
+// Si l'envoi automatique n'est pas configuré (ou échoue), la demande est envoyée au vendeur comme avant.
+const canMail = !!(BREVO_API_KEY && MAIL_FROM);
+const canSms = !!(INFOBIP_BASE_URL && INFOBIP_API_KEY);
+const hashCode = c => crypto.createHmac("sha256", TKEY).update("reset:" + c).digest("hex");
+async function sendMail(to, nom, code) {
+  const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: { "api-key": BREVO_API_KEY, "Content-Type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      sender: { name: "Stephy La Merveille", email: MAIL_FROM },
+      to: [{ email: to }],
+      subject: "Votre code de vérification",
+      textContent: `Bonjour ${nom},\n\nVotre code est : ${code}\nIl est valable 10 minutes. Ne le donnez à personne.\n\nStephy La Merveille`,
+    }),
+  });
+  if (!r.ok) throw new Error("e-mail refusé (" + r.status + ")");
+}
+async function sendSms(num, code) {
+  const base = /^https?:/.test(INFOBIP_BASE_URL) ? INFOBIP_BASE_URL : "https://" + INFOBIP_BASE_URL;
+  const to = num.length === 10 ? "225" + num : num; // numéros ivoiriens enregistrés sans l'indicatif
+  const r = await fetch(base.replace(/\/$/, "") + "/sms/2/text/advanced", {
+    method: "POST",
+    headers: { Authorization: "App " + INFOBIP_API_KEY, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ messages: [{ from: SMS_SENDER, destinations: [{ to }], text: `Stephy La Merveille : votre code est ${code}. Valable 10 min. Ne le donnez à personne.` }] }),
+  });
+  if (!r.ok) throw new Error("SMS refusé (" + r.status + ")");
+}
+function askVendor(u) {
+  if (u.resetRequested) return;
+  u.resetRequested = new Date().toISOString();
+  db.messages.unshift({ id: crypto.randomBytes(4).toString("hex"), date: u.resetRequested, nom: u.nom, contact: u.ident, message: "🔑 Demande de nouveau mot de passe. Contactez ce client, puis allez dans Vendeur › Clients pour lui générer un mot de passe temporaire.", read: false });
+  db.messages = db.messages.slice(0, 1000); save();
+}
+// Étape 1 : le client donne son numéro ou e-mail ; on lui envoie un code
+app.post("/api/forgot", async (req, res) => {
   try {
     if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
     const id = normIdent(req.body?.ident), u = id && db.users.find(x => x.key === id.key);
-    if (u && !u.resetRequested) {
-      u.resetRequested = new Date().toISOString();
-      db.messages.unshift({ id: crypto.randomBytes(4).toString("hex"), date: u.resetRequested, nom: u.nom, contact: u.ident, message: "🔑 Demande de nouveau mot de passe. Contactez ce client, puis allez dans Vendeur › Clients pour lui générer un mot de passe temporaire.", read: false });
-      db.messages = db.messages.slice(0, 1000); save();
+    const auto = id ? (id.mail ? canMail : canSms) : false; // ne dépend pas de l'existence du compte
+    if (u) {
+      if (!auto) askVendor(u);
+      else {
+        const now = Date.now(), hits = (u.resetHits || []).filter(t => now - t < 3600e3);
+        if (hits.length < 3) { // 3 codes par heure au maximum
+          const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+          let sent = false;
+          try { if (id.mail) await sendMail(u.ident, u.nom, code); else await sendSms(u.ident, code); sent = true; }
+          catch (e) { console.error("Envoi du code :", e.message); }
+          if (sent) { u.reset = { h: hashCode(code), exp: now + 600e3, tries: 0 }; hits.push(now); u.resetHits = hits; save(); }
+          else askVendor(u);
+        }
+      }
     }
-    res.json({ ok: true }); // même réponse que le compte existe ou non
+    res.json({ ok: true, auto }); // même réponse que le compte existe ou non
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
+});
+// Étape 2 : le client entre le code reçu + son nouveau mot de passe
+app.post("/api/forgot-reset", async (req, res) => {
+  try {
+    if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
+    const b = req.body || {}, id = normIdent(b.ident), code = String(b.code || "").replace(/\D/g, ""), pw = String(b.password || "").slice(0, 200);
+    const bad = { error: "Code incorrect ou expiré. Demandez un nouveau code." };
+    if (pw.length < 6) return res.status(400).json({ error: "Le mot de passe doit avoir au moins 6 caractères" });
+    const u = id && db.users.find(x => x.key === id.key), r = u && u.reset;
+    if (!r || Date.now() > r.exp) return res.status(400).json(bad);
+    if (++r.tries > 5) { u.reset = null; save(); return res.status(400).json(bad); }
+    const a = Buffer.from(hashCode(code)), c = Buffer.from(r.h);
+    if (code.length !== 6 || a.length !== c.length || !crypto.timingSafeEqual(a, c)) { save(); return res.status(400).json(bad); }
+    u.salt = crypto.randomBytes(16).toString("hex"); u.hash = (await scrypt(pw, u.salt)).toString("hex");
+    u.mustChange = false; u.resetRequested = ""; u.reset = null; u.tv = (u.tv || 0) + 1;
+    db.messages.forEach(m => { if (m.contact === u.ident && String(m.message).startsWith("🔑")) m.read = true; });
+    save();
+    res.json({ token: makeTok(u), user: pub(u) }); // le client est connecté directement
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
 });
 app.post("/api/change-password", clientAuth, async (req, res) => {
