@@ -1,0 +1,36 @@
+// PaymentMethods.test.jsx
+import { render, screen, fireEvent } from "@testing-library/react";
+import { PaymentMethods } from "./PaymentMethods";
+
+describe("PaymentMethods", () => {
+  test("affiche les 5 modes de paiement", () => {
+    render(<PaymentMethods selected="orange" onSelect={() => {}} />);
+    expect(screen.getAllByRole("radio")).toHaveLength(5);
+  });
+
+  test("affiche les logos avec leur nom en alt", () => {
+    render(<PaymentMethods selected="orange" onSelect={() => {}} />);
+    expect(screen.getByAltText("Orange Money")).toBeInTheDocument();
+    expect(screen.getByAltText("MTN Money")).toBeInTheDocument();
+    expect(screen.getByAltText("Moov Money")).toBeInTheDocument();
+    expect(screen.getByAltText("Wave")).toBeInTheDocument();
+  });
+
+  test("affiche le texte pour le paiement à la livraison", () => {
+    render(<PaymentMethods selected="orange" onSelect={() => {}} />);
+    expect(screen.getByText("Payer à la livraison")).toBeInTheDocument();
+  });
+
+  test("coche le mode sélectionné", () => {
+    render(<PaymentMethods selected="wave" onSelect={() => {}} />);
+    expect(screen.getByDisplayValue("wave")).toBeChecked();
+    expect(screen.getByDisplayValue("orange")).not.toBeChecked();
+  });
+
+  test("appelle onSelect avec l'id du mode cliqué", () => {
+    const onSelect = jest.fn();
+    render(<PaymentMethods selected="orange" onSelect={onSelect} />);
+    fireEvent.click(screen.getByDisplayValue("moov"));
+    expect(onSelect).toHaveBeenCalledWith("moov");
+  });
+});
