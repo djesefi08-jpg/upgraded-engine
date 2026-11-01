@@ -7,15 +7,13 @@ import { fileURLToPath } from "url";
 import Stripe from "stripe";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
-import nodemailer from "nodemailer";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const {
   ADMIN_PASSWORD, DATABASE_URL,
   CINETPAY_APIKEY, CINETPAY_SITE_ID,
   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
-  SESSION_SECRET,
-  GMAIL_USER, GMAIL_APP_PASSWORD,
+  SESSION_SECRET, RESEND_API_KEY,
   BASE_URL = "http://localhost:3000",
   PORT = 3000,
 } = process.env;
@@ -53,41 +51,47 @@ const page = () => {
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
-// ---- Configuration de l'envoi d'e-mail (Nodemailer) ----
-const transporter = (GMAIL_USER && GMAIL_APP_PASSWORD)
-  ? nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD }
-    })
-  : null;
-
+// ---- Fonction d'envoi d'e-mail avec Resend (contourne le blocage de Render) ----
 async function envoyerEmailConfirmation(emailClient, commande) {
-  if (!transporter || !emailClient) return;
+  if (!RESEND_API_KEY || !emailClient) return;
   
   const listeProduits = commande.items.map(item => 
     `<li>${item.q} x ${item.name} : ${item.price * item.q} FCFA</li>`
   ).join("");
 
   try {
-    await transporter.sendMail({
-      from: `"Stephy La Merveille" <${GMAIL_USER}>`,
-      to: emailClient,
-      subject: `Confirmation de votre commande ${commande.id}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-          <h2 style="color: #6b21a8;">Merci pour votre commande !</h2>
-          <p>Bonjour <b>${commande.nom}</b>,</p>
-          <p>Nous avons bien reçu votre commande <b>${commande.id}</b>.</p>
-          <p><b>Détails de votre commande :</b></p>
-          <ul>${listeProduits}</ul>
-          <p><b>Total à payer :</b> ${commande.total} FCFA</p>
-          <p><b>Mode de paiement :</b> ${commande.status}</p>
-          <br>
-          <p>Nous vous contacterons très vite pour la livraison.</p>
-          <p>L'équipe Stephy La Merveille.</p>
-        </div>
-      `
+    const reponse = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: "Stephy La Merveille <onboarding@resend.dev>", // Adresse de test
+        to: [emailClient],
+        subject: `Confirmation de votre commande ${commande.id}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
+            <h2 style="color: #6b21a8;">Merci pour votre commande !</h2>
+            <p>Bonjour <b>${commande.nom}</b>,</p>
+            <p>Nous avons bien reçu votre commande <b>${commande.id}</b>.</p>
+            <p><b>Détails de votre commande :</b></p>
+            <ul>${listeProduits}</ul>
+            <p><b>Total à payer :</b> ${commande.total} FCFA</p>
+            <p><b>Mode de paiement :</b> ${commande.status}</p>
+            <br>
+            <p>Nous vous contacterons très vite pour la livraison.</p>
+            <p>L'équipe Stephy La Merveille.</p>
+          </div>
+        `
+      })
     });
+
+    if (!reponse.ok) {
+      const err = await reponse.json();
+      throw new Error(err.message || "Erreur Resend");
+    }
+    
     console.log(`✅ E-mail envoyé à ${emailClient} pour la commande ${commande.id}`);
   } catch (error) {
     console.error("❌ Erreur d'envoi d'e-mail :", error.message);
@@ -249,7 +253,7 @@ app.post("/api/webhook", express.raw({ type: "application/json" }), async (req, 
     if (o) {
       o.status = "payée";
       save();
-      await envoyerEmailConfirmation(o.email, o); // 👈 Envoi de l'e-mail Stripe
+      await envoyerEmailConfirmation(o.email, o);
     }
   }
   res.sendStatus(200);
@@ -404,7 +408,9 @@ function clean(b) {
   }
   return d;
 }
-app.get("/api/products", (req, res) => res.json(db.products));
+// ⚠️ MODIFICATION ICI : clientAuth oblige le client à être connecté pour voir les produits
+app.get("/api/products", clientAuth, (req, res) => res.json(db.products));
+
 app.post("/api/products", auth, (req, res) => {
   const d = clean(req.body); if (!d) return res.status(400).json({ error: "Champs invalides" });
   const p = { id: db.nid++, img: "", ...d }; db.products.push(p); save(); res.json(p);
@@ -433,7 +439,7 @@ app.post("/api/checkout", async (req, res) => {
     if (checkoutLimit(req)) return res.status(429).json({ error: "Trop de commandes, réessayez plus tard" });
     const b = req.body || {};
     const nom = str(b.nom, 100), adr = str(b.adr, 300), tel = str(b.tel, 30);
-    const email = str(b.email, 150); // 👈 Récupération de l'e-mail client
+    const email = str(b.email, 150);
     
     if (!nom || !adr || tel.length < 6) return res.status(400).json({ error: "Complétez le formulaire" });
     
@@ -455,7 +461,7 @@ app.post("/api/checkout", async (req, res) => {
     const order = { 
         id: crypto.randomBytes(8).toString("hex").toUpperCase(), 
         date: new Date().toISOString(), 
-        nom, adr, tel, email, // 👈 L'e-mail est enregistré dans la commande
+        nom, adr, tel, email,
         items, total, operator, 
         userId: user ? user.id : "", 
         status: mobile ? "en attente de paiement" + (operator ? " · " + operator : "") : "à payer à la livraison" 
@@ -481,10 +487,9 @@ app.post("/api/checkout", async (req, res) => {
       return res.json({ id: order.id, url: j.data.payment_url });
     }
     
-    // Paiement à la livraison : on enregistre et on envoie l'e-mail immédiatement
     db.orders.unshift(order); 
     save();
-    envoyerEmailConfirmation(email, order).catch(console.error); // 👈 Envoi de l'e-mail
+    envoyerEmailConfirmation(email, order).catch(console.error);
     res.json({ id: order.id });
     
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur lors de la commande" }); }
@@ -526,7 +531,7 @@ async function cinetpayCheck(order) {
     if (!String(order.status).startsWith("payée")) { 
         order.status = "payée" + (order.operator ? " · " + order.operator : ""); 
         save(); 
-        await envoyerEmailConfirmation(order.email, order); // 👈 Envoi de l'e-mail CinetPay
+        await envoyerEmailConfirmation(order.email, order);
     }
     return true;
   }
