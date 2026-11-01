@@ -427,6 +427,21 @@ app.delete("/api/products/:id", auth, (req, res) => {
 // ---- Commandes ----
 app.get("/api/orders", auth, (req, res) => res.json(db.orders));
 
+// 👇 NOUVELLE ROUTE POUR CHANGER LE STATUT D'UNE COMMANDE 👇
+app.put("/api/orders/:id/status", auth, (req, res) => {
+  const o = db.orders.find(x => x.id === req.params.id);
+  if (!o) return res.status(404).json({ error: "Commande introuvable" });
+  
+  if (req.body.status) {
+    o.status = req.body.status;
+    save();
+    res.json({ ok: true, status: o.status });
+  } else {
+    res.status(400).json({ error: "Statut manquant" });
+  }
+});
+// 👆 FIN DE LA NOUVELLE ROUTE 👆
+
 const checkoutHits = new Map();
 const checkoutLimit = req => {
   const now = Date.now(), r = (checkoutHits.get(req.ip) || []).filter(t => now - t < 3600e3);
