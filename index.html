@@ -199,7 +199,8 @@ function render(){
  if(h[0]==="p")product(h[1]);else if(h[0]==="panier")cart();else if(h[0]==="commande")checkout();else if(h[0]==="ok")done(h[1]);else if(h[0]==="vendeur")vendor();else home();
 }
 window.addEventListener("hashchange",()=>{render();scrollTo(0,0)});
-load();
+// On attend 1 seconde que le jeton client soit vérifié avant de charger
+setTimeout(load, 1000); 
 if("serviceWorker" in navigator&&location.protocol.startsWith("http"))navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
 </body>
