@@ -296,5 +296,51 @@
     bar.appendChild(a);
   }
   window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); deferred = e; addInstall(); });
+// --- AJOUT AUTOMATIQUE DU MENU DÉROULANT DANS L'ESPACE VENDEUR ---
+document.addEventListener("click", function(ev) {
+  // Si on clique sur l'onglet "Commandes"
+  var btn = ev.target.closest('[data-tab="commandes"]');
+  if (btn) {
+    // On attend 1 seconde que les commandes s'affichent, puis on ajoute les menus
+    setTimeout(function() {
+      var rows = document.querySelectorAll('#vt .row');
+      rows.forEach(function(row) {
+        if (!row.querySelector('.status-select')) {
+          var idMatch = row.innerHTML.match(/n° ([A-Z0-9]+)/);
+          if (idMatch) {
+            var orderId = idMatch[1];
+            var statusTag = row.querySelector('.tag');
+            var currentStatus = statusTag ? statusTag.textContent : "";
+            
+            var div = document.createElement('div');
+            div.style.marginTop = '10px';
+            div.innerHTML = `
+              <label style="display:flex; align-items:center; gap:8px; font-size: 0.9rem; font-weight: 600;">
+                Modifier le statut :
+                <select class="status-select" style="padding:6px; border-radius:6px; border:1px solid #ccc; background:var(--card); color:var(--ink);">
+                  <option value="à payer à la livraison" ${currentStatus.includes('à payer') ? 'selected' : ''}>À payer à la livraison</option>
+                  <option value="En cours de livraison" ${currentStatus.includes('En cours') ? 'selected' : ''}>En cours de livraison</option>
+                  <option value="Livrée et payée" ${currentStatus.includes('Livrée') ? 'selected' : ''}>Livrée et payée</option>
+                </select>
+              </label>
+            `;
+            
+            div.querySelector('select').onchange = async function(e) {
+              try {
+                await api("/api/orders/" + orderId + "/status", "PUT", { status: e.target.value });
+                toast("Statut mis à jour !");
+                if (typeof vendor === 'function') vendor("commandes"); 
+              } catch (err) {
+                toast(err.message);
+              }
+            };
+            
+            row.appendChild(div);
+          }
+        }
+      });
+    }, 800);
+  }
+});
   window.addEventListener("appinstalled", function () { deferred = null; var b = document.getElementById("inst"); if (b) b.remove(); });
 })();
