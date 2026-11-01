@@ -1,11 +1,13 @@
 // ---- Menu du bas, compte client (inscription, connexion, mot de passe oublié, mes commandes) et bouton « Installer » ----
 (function () {
-  var KEY = "stephy_client_token", token = "", me = null, deferred = null, mode = "in";
+  var KEY = "stephy_client_token", token = "", me = null, deferred = null, mode = "in", initialLoad = true;
   try { token = localStorage.getItem(KEY) || ""; } catch (e) {}
+  
   function save(t) {
     token = t || "";
     try { if (t) localStorage.setItem(KEY, t); else localStorage.removeItem(KEY); } catch (e) {}
   }
+  
   async function capi(url, method, body) {
     var r = await fetch(url, { method: method || "GET", headers: { "Content-Type": "application/json", "X-Client-Token": token }, body: body ? JSON.stringify(body) : undefined });
     var d = {}; try { d = await r.json(); } catch (e) {}
@@ -16,11 +18,16 @@
   // La commande envoie le jeton du client pour être rattachée à son compte
   var _api = api;
   api = function (url, method, body) {
-    if (url === "/api/checkout" && token && body) body = Object.assign({}, body, { ct: token });
+    if (url === "/api/checkout" && body) {
+      if (token) body.ct = token;
+      // 👇 NOUVEAU : On récupère l'e-mail du formulaire pour l'envoyer au serveur
+      var emailInput = document.querySelector('input[type="email"], input[name="email"]');
+      if (emailInput) body.email = emailInput.value;
+    }
     return _api(url, method, body);
   };
 
-  // ---- Menu propre : barre du bas façon application (Accueil, Panier, Contact, Compte, Vendeur) ----
+  // ---- Menu propre : barre du bas façon application ----
   var st = document.createElement("style");
   st.textContent =
     ".nav{display:none!important}" +
@@ -50,6 +57,7 @@
   var bdg = document.createElement("b");
   bdg.className = "bdg";
   bar.querySelector('[data-k="cart"]').appendChild(bdg);
+  
   function syncTabs() {
     var h = location.hash.replace(/^#\/?/, "").split("/")[0];
     var k = h === "" || h === "p" || h === "ok" ? "home" : h === "panier" || h === "commande" ? "cart" : h === "contact" ? "chat" : h === "compte" || h === "connexion" ? "user" : h === "vendeur" ? "shop" : "";
@@ -59,19 +67,28 @@
   }
   function refreshNav() { if (accLabel) accLabel.textContent = me ? String(me.nom).split(" ")[0] : "Compte"; }
   refreshNav();
+  
   if (token) {
-    capi("/api/me").then(function (u) { me = u; refreshNav(); })
-      .catch(function (e) { if (e.status === 401) { save(""); refreshNav(); } });
+    capi("/api/me").then(function (u) { 
+        me = u; 
+        refreshNav(); 
+        initialLoad = false;
+        render(); // On rafraichit la page une fois le profil chargé
+    }).catch(function (e) { 
+        if (e.status === 401) { save(""); refreshNav(); initialLoad = false; render(); } 
+    });
+  } else {
+      initialLoad = false;
   }
 
   syncTabs();
 
-  // Page « Mon compte » : connexion, création de compte, mot de passe oublié
   function accountPage() {
     if (me) return profilePage();
     if (mode === "forgot") return forgotPage();
     var up = mode === "up";
     $("#app").innerHTML = '<h1>Mon compte</h1>' +
+      '<p class="muted" style="text-align:center; margin-bottom:20px;">Connectez-vous ou créez un compte pour découvrir nos produits.</p>' +
       '<div class="tabs"><button class="btn' + (up ? " alt" : "") + '" id="t-in">Connexion</button><button class="btn' + (up ? "" : " alt") + '" id="t-up">Créer un compte</button></div>' +
       '<form class="f" id="af">' +
       (up ? '<label>Nom complet<input name="nom" required maxlength="100" autocomplete="name"></label>' : "") +
@@ -89,12 +106,12 @@
       btn.disabled = true;
       try {
         var d = await capi(up ? "/api/register" : "/api/client-login", "POST", { nom: f.get("nom"), ident: f.get("ident"), password: f.get("password") });
-        save(d.token); me = d.user; refreshNav(); accountPage();
+        save(d.token); me = d.user; refreshNav(); toast(up ? "Compte créé !" : "Connecté !");
+        location.hash = "#/"; // Redirection vers l'accueil après connexion
       } catch (err) { toast(err.message); btn.disabled = false; }
     });
   }
 
-  // Mot de passe oublié : étape 1 = le client donne son téléphone ou e-mail et reçoit un code
   function forgotPage() {
     $("#app").innerHTML = '<h1>Mot de passe oublié</h1>' +
       '<p class="muted">Entrez le téléphone ou l’e-mail de votre compte. Nous vous envoyons un code à 6 chiffres.</p>' +
@@ -109,7 +126,6 @@
       try {
         var d = await capi("/api/forgot", "POST", { ident: ident });
         if (d.auto) return codePage(ident);
-        // Envoi automatique non activé : la demande est transmise au vendeur (ancien fonctionnement)
         var wa = document.querySelector('footer a[href*="wa.me"]');
         var link = wa ? '<p><a class="btn" target="_blank" rel="noopener" href="' + esc(wa.getAttribute("href").split("?")[0]) + '?text=' +
           encodeURIComponent("Bonjour, j’ai oublié mon mot de passe. Mon compte : " + ident) + '">Écrire au vendeur sur WhatsApp</a></p>' : "";
@@ -120,7 +136,6 @@
     });
   }
 
-  // Étape 2 = le client saisit le code reçu et choisit son nouveau mot de passe
   function codePage(ident) {
     var by = String(ident).indexOf("@") > -1 ? "par e-mail" : "par SMS";
     $("#app").innerHTML = '<h1>Entrez le code</h1>' +
@@ -178,7 +193,6 @@
     }
   }
 
-  // Page de paiement : nom et téléphone pré-remplis si le client est connecté, sinon invitation à se connecter
   function afterPay() {
     var f = document.getElementById("pf2");
     if (!f) return;
@@ -189,15 +203,29 @@
       f.insertAdjacentHTML("beforebegin", '<p class="muted">Déjà client ? <a href="#/compte">Connectez-vous</a> pour suivre vos commandes.</p>');
     }
   }
+
+  // 👇 NOUVEAU : C'est ici qu'on bloque la page d'accueil si on n'est pas connecté
   var _render = render;
   render = function () {
     var h = location.hash.replace(/^#\/?/, "").split("/");
+    
+    // Si on est en train de charger le profil au démarrage, on affiche un petit message
+    if (initialLoad && token) {
+        $("#app").innerHTML = '<p class="muted" style="text-align:center; margin-top:50px;">Chargement...</p>';
+        return;
+    }
+
+    // Si l'utilisateur n'est pas connecté et n'est ni sur la page compte, ni contact, ni vendeur
+    if (!me && h[0] !== "compte" && h[0] !== "connexion" && h[0] !== "contact" && h[0] !== "vendeur") {
+        location.hash = "#/compte"; // On le renvoie de force sur la page de connexion
+        return;
+    }
+    
     if (h[0] === "compte" || h[0] === "connexion") { accountPage(); }
     else { _render(); if (h[0] === "commande") afterPay(); }
     syncTabs();
   };
 
-  // ---- Espace vendeur : onglet « Clients » (comptes et mots de passe temporaires) ----
   function clientCard(u) {
     return '<div class="row" style="display:block"><strong>' + esc(u.nom) + '</strong> ' + (u.resetRequested ? '<span class="tag">Mot de passe oublié</span>' : "") +
       '<br><span class="muted">' + esc(u.ident) + ' · inscrit le ' + new Date(u.date).toLocaleDateString("fr-FR") + '</span>' +
@@ -244,7 +272,6 @@
     } catch (err) { toast(err.message); }
   });
 
-  // Bouton « Installer l’application » (apparaît dans la barre du bas quand Chrome permet l’installation)
   function addInstall() {
     if (document.getElementById("inst")) return;
     if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) return;
