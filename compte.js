@@ -20,7 +20,7 @@
   api = function (url, method, body) {
     if (url === "/api/checkout" && body) {
       if (token) body.ct = token;
-      // 👇 NOUVEAU : On récupère l'e-mail du formulaire pour l'envoyer au serveur
+      // 👇 On récupère l'e-mail du formulaire pour l'envoyer au serveur
       var emailInput = document.querySelector('input[type="email"], input[name="email"]');
       if (emailInput) body.email = emailInput.value;
     }
@@ -193,9 +193,22 @@
     }
   }
 
+  // 👇 MODIFIÉ : Ajout automatique du champ e-mail sur la page de commande
   function afterPay() {
     var f = document.getElementById("pf2");
     if (!f) return;
+
+    if (!f.querySelector('input[name="email"]')) {
+      var emailLabel = document.createElement("label");
+      emailLabel.innerHTML = 'Adresse e-mail (pour le reçu)<input type="email" name="email" placeholder="Ex: monadresse@gmail.com" required>';
+      var submitBtn = f.querySelector("button[type='submit']");
+      if (submitBtn) {
+        f.insertBefore(emailLabel, submitBtn);
+      } else {
+        f.appendChild(emailLabel);
+      }
+    }
+
     if (me) {
       if (f.elements["nom"] && !f.elements["nom"].value) f.elements["nom"].value = me.nom;
       if (f.elements["tel"] && !f.elements["tel"].value && me.tel) f.elements["tel"].value = me.tel;
@@ -204,20 +217,18 @@
     }
   }
 
-  // 👇 NOUVEAU : C'est ici qu'on bloque la page d'accueil si on n'est pas connecté
+  // C'est ici qu'on bloque la page d'accueil si on n'est pas connecté
   var _render = render;
   render = function () {
     var h = location.hash.replace(/^#\/?/, "").split("/");
     
-    // Si on est en train de charger le profil au démarrage, on affiche un petit message
     if (initialLoad && token) {
         $("#app").innerHTML = '<p class="muted" style="text-align:center; margin-top:50px;">Chargement...</p>';
         return;
     }
 
-    // Si l'utilisateur n'est pas connecté et n'est ni sur la page compte, ni contact, ni vendeur
     if (!me && h[0] !== "compte" && h[0] !== "connexion" && h[0] !== "contact" && h[0] !== "vendeur") {
-        location.hash = "#/compte"; // On le renvoie de force sur la page de connexion
+        location.hash = "#/compte"; 
         return;
     }
     
