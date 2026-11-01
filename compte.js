@@ -20,7 +20,6 @@
   api = function (url, method, body) {
     if (url === "/api/checkout" && body) {
       if (token) body.ct = token;
-      // 👇 On récupère l'e-mail du formulaire pour l'envoyer au serveur
       var emailInput = document.querySelector('input[type="email"], input[name="email"]');
       if (emailInput) body.email = emailInput.value;
     }
@@ -73,7 +72,7 @@
         me = u; 
         refreshNav(); 
         initialLoad = false;
-        render(); // On rafraichit la page une fois le profil chargé
+        render(); 
     }).catch(function (e) { 
         if (e.status === 401) { save(""); refreshNav(); initialLoad = false; render(); } 
     });
@@ -107,7 +106,7 @@
       try {
         var d = await capi(up ? "/api/register" : "/api/client-login", "POST", { nom: f.get("nom"), ident: f.get("ident"), password: f.get("password") });
         save(d.token); me = d.user; refreshNav(); toast(up ? "Compte créé !" : "Connecté !");
-        location.hash = "#/"; // Redirection vers l'accueil après connexion
+        location.hash = "#/";
       } catch (err) { toast(err.message); btn.disabled = false; }
     });
   }
@@ -193,7 +192,6 @@
     }
   }
 
-  // 👇 MODIFIÉ : Ajout automatique du champ e-mail sur la page de commande
   function afterPay() {
     var f = document.getElementById("pf2");
     if (!f) return;
@@ -217,7 +215,6 @@
     }
   }
 
-  // C'est ici qu'on bloque la page d'accueil si on n'est pas connecté
   var _render = render;
   render = function () {
     var h = location.hash.replace(/^#\/?/, "").split("/");
