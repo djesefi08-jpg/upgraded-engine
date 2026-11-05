@@ -1,33 +1,20 @@
 import express from "express";
-import pg from "pg";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
 import Stripe from "stripe";
-import helmet from "helmet";
-import cookieParser from "cookie-parser";
+
+let pg = null; // module de la base de données : s'il n'est pas installé, la boutique utilise un fichier
+try { pg = (await import("pg")).default; } catch { console.log("Module pg non installé : la boutique utilise un fichier local"); }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const {
-  ADMIN_PASSWORD, DATABASE_URL,
-  CINETPAY_APIKEY, CINETPAY_SITE_ID,
-  STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
-  SESSION_SECRET, RESEND_API_KEY,
-  BASE_URL = "http://localhost:3000",
-  PORT = 3000,
-} = process.env;
-
+const { ADMIN_PASSWORD, DATABASE_URL, CINETPAY_APIKEY, CINETPAY_SITE_ID, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, BASE_URL = "http://localhost:3000", PORT = 3000 } = process.env;
 if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 8) {
   console.error("Définis ADMIN_PASSWORD (8 caractères minimum) dans le fichier .env");
   process.exit(1);
 }
-if (!SESSION_SECRET || SESSION_SECRET.length < 16) {
-  console.error("Définis SESSION_SECRET (16 caractères minimum) dans le fichier .env");
-  process.exit(1);
-}
-
-// ---- Coordonnées affichées en bas de la boutique ----
+// ---- Coordonnées affichées en bas de la boutique (modifie ici si elles changent) ----
 const CONTACT = {
   email: "djesefi08@gmail.com",
   phone: "+2250585276093",
@@ -35,68 +22,19 @@ const CONTACT = {
   tiktok: "https://www.tiktok.com/@stephylamerveille08",
 };
 const FOOTER = `<footer><p>Une question ? Écrivez-nous :</p><p><a href="mailto:${CONTACT.email}">E-mail</a> · <a href="tel:${CONTACT.phone}">Appeler</a> · <a href="https://wa.me/${CONTACT.whatsapp}" target="_blank" rel="noopener">WhatsApp</a> · <a href="${CONTACT.tiktok}" target="_blank" rel="noopener">TikTok</a></p></footer>`;
-
-const readScripts = () =>
-  ["extras.js", "compte.js"]
-    .map(n => { try { return fs.readFileSync(path.join(__dirname, n), "utf8"); } catch { return ""; } })
-    .filter(Boolean)
-    .map(x => "<script>" + x + "</script>")
-    .join("");
-
+// extras.js, compte.js et vendeur.js sont ajoutés à la page ; s'ils manquent, la boutique marche quand même
+const readScripts = () => ["extras.js", "compte.js", "vendeur.js"].map(n => { try { return fs.readFileSync(path.join(__dirname, n), "utf8"); } catch { return ""; } })
+  .filter(Boolean).map(x => "<script>" + x + "</script>").join("");
 const page = () => {
   const h = fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/<footer>[\s\S]*?<\/footer>/, () => FOOTER);
   const x = readScripts();
   return x ? h.replace("</body>", () => x + "</body>") : h;
 };
 
+// Statut affiché = paiement + étape de la commande (validée, livrée)
+const statusOf = o => o.status + (o.delivered ? " · livrée" : o.validated ? " · validée" : "");
+
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
-
-// ---- Fonction d'envoi d'e-mail avec Resend (contourne le blocage de Render) ----
-async function envoyerEmailConfirmation(emailClient, commande) {
-  if (!RESEND_API_KEY || !emailClient) return;
-  
-  const listeProduits = commande.items.map(item => 
-    `<li>${item.q} x ${item.name} : ${item.price * item.q} FCFA</li>`
-  ).join("");
-
-  try {
-    const reponse = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${RESEND_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        from: "Stephy La Merveille <onboarding@resend.dev>", // Adresse de test
-        to: [emailClient],
-        subject: `Confirmation de votre commande ${commande.id}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-            <h2 style="color: #6b21a8;">Merci pour votre commande !</h2>
-            <p>Bonjour <b>${commande.nom}</b>,</p>
-            <p>Nous avons bien reçu votre commande <b>${commande.id}</b>.</p>
-            <p><b>Détails de votre commande :</b></p>
-            <ul>${listeProduits}</ul>
-            <p><b>Total à payer :</b> ${commande.total} FCFA</p>
-            <p><b>Mode de paiement :</b> ${commande.status}</p>
-            <br>
-            <p>Nous vous contacterons très vite pour la livraison.</p>
-            <p>L'équipe Stephy La Merveille.</p>
-          </div>
-        `
-      })
-    });
-
-    if (!reponse.ok) {
-      const err = await reponse.json();
-      throw new Error(err.message || "Erreur Resend");
-    }
-    
-    console.log(`✅ E-mail envoyé à ${emailClient} pour la commande ${commande.id}`);
-  } catch (error) {
-    console.error("❌ Erreur d'envoi d'e-mail :", error.message);
-  }
-}
 
 // ---- Produits d'exemple (utilisés seulement la toute première fois) ----
 const SEED = [
@@ -111,18 +49,20 @@ const SEED = [
 ].map(([name, price, cat, emoji, desc], i) => ({ id: i + 1, name, price, cat, emoji, desc, img: "" }));
 
 // ---- Base de données ----
+// Avec DATABASE_URL : base PostgreSQL (les données restent même si la boutique redémarre).
+// Sans DATABASE_URL : simple fichier local (les données sont perdues sur l'offre gratuite de Render).
 const DIR = path.join(__dirname, "data"), FILE = path.join(DIR, "db.json");
 let pool = null;
-if (DATABASE_URL) {
+if (DATABASE_URL && pg) {
   try {
-    const u = new URL(DATABASE_URL); u.search = "";
+    const u = new URL(DATABASE_URL); u.search = ""; // on retire les options de l'adresse : la connexion sécurisée est réglée ci-dessous
     pool = new pg.Pool({ connectionString: u.toString(), ssl: { rejectUnauthorized: false }, max: 3, idleTimeoutMillis: 30000, connectionTimeoutMillis: 20000 });
     pool.on("error", e => console.error("Base de données (connexion inactive) :", e.message));
   } catch (e) { console.error("DATABASE_URL n'est pas une adresse valide :", e.message); pool = null; }
 }
 async function q(sql, params) {
   try { return await pool.query(sql, params); }
-  catch { await new Promise(r => setTimeout(r, 2000)); return await pool.query(sql, params); }
+  catch (e) { await new Promise(r => setTimeout(r, 2000)); return await pool.query(sql, params); } // 2e essai : la base se réveille
 }
 const last = {};
 let db;
@@ -143,7 +83,6 @@ if (!pool) {
 }
 db.messages = db.messages || [];
 db.users = db.users || [];
-
 let chain = Promise.resolve();
 function save() {
   if (!pool) { fs.writeFileSync(FILE + ".tmp", JSON.stringify(db)); fs.renameSync(FILE + ".tmp", FILE); return; }
@@ -173,102 +112,36 @@ function save() {
   });
 }
 save();
+// À l'arrêt de la boutique, on attend la fin des sauvegardes en cours
 for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, async () => { try { await chain; } catch {} process.exit(0); });
 
-// =========================================================
-// ---- Helpers sécurité ----
-// =========================================================
-const sha = s => crypto.createHash("sha256").update(String(s)).digest();
-const TKEY = crypto.createHash("sha256").update("clients:" + SESSION_SECRET).digest();
-const AKEY = crypto.createHash("sha256").update("admin:" + SESSION_SECRET).digest();
-
-const signToken = (payload, key, ttlMs) => {
-  const p = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + ttlMs })).toString("base64url");
-  return p + "." + crypto.createHmac("sha256", key).update(p).digest("base64url");
-};
-const verifyToken = (t, key) => {
-  const [p, s] = String(t || "").split(".");
-  if (!p || !s) return null;
-  const expected = crypto.createHmac("sha256", key).update(p).digest("base64url");
-  if (s.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(s), Buffer.from(expected))) return null;
-  try {
-    const d = JSON.parse(Buffer.from(p, "base64url").toString());
-    return d.exp > Date.now() ? d : null;
-  } catch { return null; }
-};
-
-const isHttps = BASE_URL.startsWith("https://");
-const COOKIE_BASE = { httpOnly: true, secure: isHttps, sameSite: "strict", path: "/" };
-const setAdminCookie  = (res, t) => res.cookie("admin",  t, { ...COOKIE_BASE, maxAge: 12 * 3600e3 });
-const setClientCookie = (res, t) => res.cookie("client", t, { ...COOKIE_BASE, sameSite: "lax", maxAge: 60 * 864e5 });
-
-const fetchT = async (url, opts = {}, ms = 15000) => {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
-  finally { clearTimeout(timer); }
-};
-
-const imgOk = (dataUrl) => {
-  if (typeof dataUrl !== "string" || dataUrl.length >= 600000) return false;
-  const m = /^data:image\/(png|jpe?g|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
-  if (!m) return false;
-  let buf;
-  try { buf = Buffer.from(m[2], "base64"); } catch { return false; }
-  if (buf.length < 12) return false;
-  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return true;
-  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return true;
-  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return true;
-  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
-      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return true;
-  return false;
-};
-
-// =========================================================
-// ---- Application ----
-// =========================================================
 const app = express();
 app.disable("x-powered-by");
+// Vérification rapide : https://ton-site/api/health
+app.get("/api/health", (req, res) => res.json({ ok: true, base: pool ? "PostgreSQL" : "fichier local (non permanent sur Render gratuit)" }));
 app.set("trust proxy", 1);
 
-app.use(helmet({
-  contentSecurityPolicy: false,
-  crossOriginEmbedderPolicy: false,
-}));
-app.use(cookieParser());
-
-app.get("/api/health", async (req, res) => {
-  let ok = true;
-  if (pool) { try { await q("select 1"); } catch { ok = false; } }
-  res.json({ ok });
-});
-
-app.post("/api/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+// ---- Webhook Stripe (corps brut, avant express.json) ----
+app.post("/api/webhook", express.raw({ type: "application/json" }), (req, res) => {
   if (!stripe || !STRIPE_WEBHOOK_SECRET) return res.sendStatus(400);
   let ev;
   try { ev = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], STRIPE_WEBHOOK_SECRET); }
   catch { return res.sendStatus(400); }
   if (ev.type === "checkout.session.completed") {
     const o = db.orders.find(x => x.id === ev.data.object.metadata?.orderId);
-    if (o) {
-      o.status = "payée";
-      save();
-      await envoyerEmailConfirmation(o.email, o);
-    }
+    if (o) { o.status = "payée"; save(); }
   }
   res.sendStatus(200);
 });
-
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false }));
 
-// ---- Auth vendeur ----
-const attempts = new Map();
+// ---- Authentification vendeur ----
+const sessions = new Map(), attempts = new Map();
+const sha = s => crypto.createHash("sha256").update(String(s)).digest();
 const auth = (req, res, next) => {
-  const t = req.cookies?.admin || (req.headers.authorization || "").replace("Bearer ", "");
-  const d = verifyToken(t, AKEY);
-  if (!d || d.role !== "admin") return res.status(401).json({ error: "Non autorisé" });
-  req.admin = d;
+  const t = (req.headers.authorization || "").replace("Bearer ", "");
+  if ((sessions.get(t) || 0) < Date.now()) return res.status(401).json({ error: "Non autorisé" });
   next();
 };
 app.post("/api/login", (req, res) => {
@@ -277,24 +150,27 @@ app.post("/api/login", (req, res) => {
   if (++a.n > 10) { attempts.set(req.ip, a); return res.status(429).json({ error: "Trop d'essais, réessayez plus tard" }); }
   attempts.set(req.ip, a);
   if (!crypto.timingSafeEqual(sha(req.body?.password), sha(ADMIN_PASSWORD))) return res.status(401).json({ error: "Mot de passe incorrect" });
-  a.n = 0; attempts.set(req.ip, a);
-  const token = signToken({ role: "admin" }, AKEY, 12 * 3600e3);
-  setAdminCookie(res, token);
+  const token = crypto.randomBytes(24).toString("hex");
+  sessions.set(token, Date.now() + 12 * 3600e3);
   res.json({ token });
 });
-app.post("/api/logout", (req, res) => { res.clearCookie("admin", { path: "/" }); res.json({ ok: true }); });
 
-// ---- Comptes clients ----
+// ---- Comptes clients : inscription, connexion, mes commandes ----
 const str = (v, max) => String(v ?? "").trim().slice(0, max);
 const scrypt = (p, s) => new Promise((ok, no) => crypto.scrypt(String(p), s, 64, (e, k) => (e ? no(e) : ok(k))));
-const makeTok = u => signToken({ uid: u.id, v: u.tv || 0 }, TKEY, 60 * 864e5);
-
-const userOf = (req) => {
-  const t = req.cookies?.client || req.headers["x-client-token"] || "";
-  const k = verifyToken(t, TKEY);
-  return k ? db.users.find(x => x.id === k.uid && (x.tv || 0) === (k.v || 0)) || null : null;
+const TKEY = crypto.createHash("sha256").update("clients:" + (process.env.SESSION_SECRET || ADMIN_PASSWORD)).digest();
+const makeTok = u => {
+  const p = Buffer.from(JSON.stringify({ uid: u.id, v: u.tv || 0, exp: Date.now() + 60 * 864e5 })).toString("base64url");
+  return p + "." + crypto.createHmac("sha256", TKEY).update(p).digest("base64url");
 };
-
+const readTok = t => {
+  const [p, s] = String(t || "").split(".");
+  if (!p || !s) return null;
+  const ok = crypto.createHmac("sha256", TKEY).update(p).digest("base64url");
+  if (s.length !== ok.length || !crypto.timingSafeEqual(Buffer.from(s), Buffer.from(ok))) return null;
+  try { const d = JSON.parse(Buffer.from(p, "base64url").toString()); return d.exp > Date.now() ? { uid: d.uid, v: d.v || 0 } : null; } catch { return null; }
+};
+const userOf = t => { const k = readTok(t); return k ? db.users.find(x => x.id === k.uid && (x.tv || 0) === k.v) || null : null; };
 const normIdent = v => {
   const s = String(v ?? "").trim().toLowerCase();
   if (s.includes("@")) return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? { key: s, mail: true, shown: s } : null;
@@ -303,14 +179,12 @@ const normIdent = v => {
   return d.length >= 8 && d.length <= 15 ? { key: d, mail: false, shown: d } : null;
 };
 const pub = u => ({ nom: u.nom, ident: u.ident, tel: u.mail ? "" : u.ident, mustChange: !!u.mustChange });
-
 const authHits = new Map();
 const tooMany = req => {
   const now = Date.now(), r = (authHits.get(req.ip) || []).filter(t => now - t < 900e3);
   if (r.length >= 20) return true;
   r.push(now); authHits.set(req.ip, r); return false;
 };
-
 app.post("/api/register", async (req, res) => {
   try {
     if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
@@ -321,12 +195,9 @@ app.post("/api/register", async (req, res) => {
     const salt = crypto.randomBytes(16).toString("hex");
     const user = { id: crypto.randomBytes(6).toString("hex"), nom, key: id.key, ident: id.shown, mail: id.mail, salt, hash: (await scrypt(pw, salt)).toString("hex"), date: new Date().toISOString() };
     db.users.push(user); save();
-    const token = makeTok(user);
-    setClientCookie(res, token);
-    res.json({ token, user: pub(user) });
+    res.json({ token: makeTok(user), user: pub(user) });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
 });
-
 app.post("/api/client-login", async (req, res) => {
   try {
     if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
@@ -334,23 +205,19 @@ app.post("/api/client-login", async (req, res) => {
     const u = id && db.users.find(x => x.key === id.key);
     const ok = u && crypto.timingSafeEqual(await scrypt(pw, u.salt), Buffer.from(u.hash, "hex"));
     if (!ok) return res.status(401).json({ error: "Identifiant ou mot de passe incorrect" });
-    const token = makeTok(u);
-    setClientCookie(res, token);
-    res.json({ token, user: pub(u) });
+    res.json({ token: makeTok(u), user: pub(u) });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
 });
-
-app.post("/api/client-logout", (req, res) => { res.clearCookie("client", { path: "/" }); res.json({ ok: true }); });
-
 const clientAuth = (req, res, next) => {
-  const u = userOf(req);
+  const u = userOf(req.headers["x-client-token"]);
   if (!u) return res.status(401).json({ error: "Connectez-vous" });
   req.user = u; next();
 };
 app.get("/api/me", clientAuth, (req, res) => res.json(pub(req.user)));
 app.get("/api/my-orders", clientAuth, (req, res) =>
-  res.json(db.orders.filter(o => o.userId === req.user.id).map(o => ({ id: o.id, date: o.date, items: o.items, total: o.total, status: o.status }))));
+  res.json(db.orders.filter(o => o.userId === req.user.id).map(o => ({ id: o.id, date: o.date, items: o.items, total: o.total, status: statusOf(o) }))));
 
+// ---- Mot de passe oublié : le client fait une demande, le vendeur génère un mot de passe temporaire ----
 app.post("/api/forgot", (req, res) => {
   try {
     if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
@@ -360,10 +227,9 @@ app.post("/api/forgot", (req, res) => {
       db.messages.unshift({ id: crypto.randomBytes(4).toString("hex"), date: u.resetRequested, nom: u.nom, contact: u.ident, message: "🔑 Demande de nouveau mot de passe. Contactez ce client, puis allez dans Vendeur › Clients pour lui générer un mot de passe temporaire.", read: false });
       db.messages = db.messages.slice(0, 1000); save();
     }
-    res.json({ ok: true });
+    res.json({ ok: true }); // même réponse que le compte existe ou non
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
 });
-
 app.post("/api/change-password", clientAuth, async (req, res) => {
   try {
     if (tooMany(req)) return res.status(429).json({ error: "Trop d’essais, réessayez dans quelques minutes" });
@@ -372,16 +238,12 @@ app.post("/api/change-password", clientAuth, async (req, res) => {
     if (!crypto.timingSafeEqual(await scrypt(old, u.salt), Buffer.from(u.hash, "hex"))) return res.status(401).json({ error: "Ancien mot de passe incorrect" });
     u.salt = crypto.randomBytes(16).toString("hex"); u.hash = (await scrypt(nw, u.salt)).toString("hex");
     u.mustChange = false; u.tv = (u.tv || 0) + 1; save();
-    const token = makeTok(u);
-    setClientCookie(res, token);
-    res.json({ token, user: pub(u) });
+    res.json({ token: makeTok(u), user: pub(u) });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
 });
-
 app.get("/api/users", auth, (req, res) =>
   res.json(db.users.map(u => ({ id: u.id, nom: u.nom, ident: u.ident, mail: u.mail, date: u.date, resetRequested: !!u.resetRequested }))
     .sort((a, b) => (b.resetRequested - a.resetRequested) || b.date.localeCompare(a.date))));
-
 app.post("/api/users/:id/reset", auth, async (req, res) => {
   try {
     const u = db.users.find(x => x.id === req.params.id);
@@ -401,16 +263,10 @@ function clean(b) {
   const price = Number(b.price);
   if (!str(b.name, 80) || !str(b.cat, 40) || !(price >= 0 && price <= 100000)) return null;
   const d = { name: str(b.name, 80), price: Math.round(price / 5) * 5, cat: str(b.cat, 40), emoji: str(b.emoji, 4) || "📦", desc: str(b.desc, 500) };
-  if (b.img !== undefined) {
-    if (b.img === "") d.img = "";
-    else if (imgOk(b.img)) d.img = b.img;
-    else return null;
-  }
+  if (typeof b.img === "string" && b.img.startsWith("data:image/") && b.img.length < 600000) d.img = b.img;
   return d;
 }
-// ⚠️ MODIFICATION ICI : clientAuth oblige le client à être connecté pour voir les produits
-app.get("/api/products", clientAuth, (req, res) => res.json(db.products));
-
+app.get("/api/products", (req, res) => res.json(db.products));
 app.post("/api/products", auth, (req, res) => {
   const d = clean(req.body); if (!d) return res.status(400).json({ error: "Champs invalides" });
   const p = { id: db.nid++, img: "", ...d }; db.products.push(p); save(); res.json(p);
@@ -425,66 +281,35 @@ app.delete("/api/products/:id", auth, (req, res) => {
 });
 
 // ---- Commandes ----
-app.get("/api/orders", auth, (req, res) => res.json(db.orders));
-
-// 👇 NOUVELLE ROUTE POUR CHANGER LE STATUT D'UNE COMMANDE 👇
-app.put("/api/orders/:id/status", auth, (req, res) => {
+app.get("/api/orders", auth, (req, res) => res.json(db.orders.map(o => ({ ...o, status: statusOf(o) }))));
+// Le vendeur valide une commande, puis la marque comme livrée
+app.post("/api/orders/:id/step", auth, (req, res) => {
   const o = db.orders.find(x => x.id === req.params.id);
   if (!o) return res.status(404).json({ error: "Commande introuvable" });
-  
-  if (req.body.status) {
-    o.status = req.body.status;
-    save();
-    res.json({ ok: true, status: o.status });
-  } else {
-    res.status(400).json({ error: "Statut manquant" });
-  }
+  const step = req.body?.step, now = new Date().toISOString();
+  if (step === "validee") o.validated = o.validated || now;
+  else if (step === "livree") { o.validated = o.validated || now; o.delivered = o.delivered || now; }
+  else return res.status(400).json({ error: "Étape inconnue" });
+  save(); res.json({ ...o, status: statusOf(o) });
 });
-// 👆 FIN DE LA NOUVELLE ROUTE 👆
-
-const checkoutHits = new Map();
-const checkoutLimit = req => {
-  const now = Date.now(), r = (checkoutHits.get(req.ip) || []).filter(t => now - t < 3600e3);
-  if (r.length >= 20) return true;
-  r.push(now); checkoutHits.set(req.ip, r); return false;
-};
-
 app.post("/api/checkout", async (req, res) => {
   try {
-    if (checkoutLimit(req)) return res.status(429).json({ error: "Trop de commandes, réessayez plus tard" });
-    const b = req.body || {};
-    const nom = str(b.nom, 100), adr = str(b.adr, 300), tel = str(b.tel, 30);
-    const email = str(b.email, 150);
-    
+    const b = req.body || {}, nom = str(b.nom, 100), adr = str(b.adr, 300), tel = str(b.tel, 30);
     if (!nom || !adr || tel.length < 6) return res.status(400).json({ error: "Complétez le formulaire" });
-    
     const items = (Array.isArray(b.items) ? b.items : []).slice(0, 50).map(i => {
       const p = db.products.find(x => x.id === +i.id), q = Math.floor(+i.q);
       return p && q >= 1 && q <= 99 ? { name: p.name, price: p.price, q } : null;
     }).filter(Boolean);
-    
     if (!items.length) return res.status(400).json({ error: "Panier vide" });
-    
     const total = Math.round(items.reduce((a, i) => a + i.price * i.q, 0));
     const mobile = b.method !== "livraison";
     const operator = ["Orange Money", "MTN Money", "Moov Money", "Wave"].includes(b.operator) ? b.operator : "";
-    
     if (mobile && !(CINETPAY_APIKEY && CINETPAY_SITE_ID)) return res.status(503).json({ error: "Le paiement mobile n’est pas encore activé. Choisissez « Payer à la livraison »." });
-    
-    const user = userOf(req);
-    
-    const order = { 
-        id: crypto.randomBytes(8).toString("hex").toUpperCase(), 
-        date: new Date().toISOString(), 
-        nom, adr, tel, email,
-        items, total, operator, 
-        userId: user ? user.id : "", 
-        status: mobile ? "en attente de paiement" + (operator ? " · " + operator : "") : "à payer à la livraison" 
-    };
-    
+    const user = userOf(b.ct);
+    const order = { id: crypto.randomBytes(3).toString("hex").toUpperCase(), date: new Date().toISOString(), nom, adr, tel, items, total, operator, userId: user ? user.id : "", status: mobile ? "en attente de paiement" + (operator ? " · " + operator : "") : "à payer à la livraison" };
     if (mobile) {
       const [first, ...rest] = nom.split(" ");
-      const r = await fetchT("https://api-checkout.cinetpay.com/v2/payment", {
+      const r = await fetch("https://api-checkout.cinetpay.com/v2/payment", {
         method: "POST",
         headers: { "Content-Type": "application/json", "User-Agent": "stephy-boutique/1.0" },
         body: JSON.stringify({
@@ -501,20 +326,16 @@ app.post("/api/checkout", async (req, res) => {
       db.orders.unshift(order); save();
       return res.json({ id: order.id, url: j.data.payment_url });
     }
-    
-    db.orders.unshift(order); 
-    save();
-    envoyerEmailConfirmation(email, order).catch(console.error);
+    db.orders.unshift(order); save();
     res.json({ id: order.id });
-    
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur lors de la commande" }); }
 });
 
-// ---- Messages ----
+// ---- Messages : tout le monde peut écrire, seul le vendeur connecté peut lire ----
 const msgHits = new Map();
 app.post("/api/messages", (req, res) => {
   const b = req.body || {};
-  if (b.website) return res.json({ ok: true });
+  if (b.website) return res.json({ ok: true }); // champ piège pour les robots
   const now = Date.now(), recent = (msgHits.get(req.ip) || []).filter(t => now - t < 3600e3);
   if (recent.length >= 5) return res.status(429).json({ error: "Trop de messages, réessayez plus tard" });
   const nom = str(b.nom, 100), contact = str(b.contact, 120), message = str(b.message, 2000);
@@ -534,20 +355,16 @@ app.delete("/api/messages/:id", auth, (req, res) => {
   db.messages = db.messages.filter(x => x.id !== req.params.id); save(); res.json({ ok: true });
 });
 
-// ---- Mobile money (CinetPay) ----
+// ---- Mobile money (CinetPay : Orange Money, MTN, Moov, Wave) ----
 async function cinetpayCheck(order) {
-  const r = await fetchT("https://api-checkout.cinetpay.com/v2/payment/check", {
+  const r = await fetch("https://api-checkout.cinetpay.com/v2/payment/check", {
     method: "POST",
     headers: { "Content-Type": "application/json", "User-Agent": "stephy-boutique/1.0" },
     body: JSON.stringify({ apikey: CINETPAY_APIKEY, site_id: CINETPAY_SITE_ID, transaction_id: order.id }),
   });
   const j = await r.json();
   if (j.code === "00" && j.data?.status === "ACCEPTED" && Number(j.data.amount) === order.total) {
-    if (!String(order.status).startsWith("payée")) { 
-        order.status = "payée" + (order.operator ? " · " + order.operator : ""); 
-        save(); 
-        await envoyerEmailConfirmation(order.email, order);
-    }
+    if (!String(order.status).startsWith("payée")) { order.status = "payée" + (order.operator ? " · " + order.operator : ""); save(); }
     return true;
   }
   if (j.data?.status === "REFUSED" && !String(order.status).startsWith("payée")) { order.status = "paiement refusé"; save(); }
@@ -561,25 +378,16 @@ app.post("/api/cinetpay-notify", async (req, res) => {
   } catch (e) { console.error(e); }
   res.sendStatus(200);
 });
-
-const retourHits = new Map();
 app.all("/retour", async (req, res) => {
-  const now = Date.now(), r = (retourHits.get(req.ip) || []).filter(t => now - t < 60e3);
-  if (r.length >= 5) return res.redirect(303, "/#/panier");
-  r.push(now); retourHits.set(req.ip, r);
-
-  const id = String(req.query.order || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+  const id = String(req.query.order || "").replace(/[^A-Za-z0-9]/g, "");
   const o = db.orders.find(x => x.id === id);
   let ok = false;
   try { if (o && CINETPAY_APIKEY) ok = await cinetpayCheck(o); } catch (e) { console.error(e); }
   res.redirect(303, ok ? `/#/ok/${id}` : "/#/panier");
 });
 
-// ---- Fichiers statiques ----
 const PUBLIC = ["manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png", "maskable-192.png", "maskable-512.png"];
 app.get(["/", "/index.html"], (req, res) => res.type("html").send(page()));
 for (const f of PUBLIC) app.get("/" + f, (req, res) => res.sendFile(path.join(__dirname, f)));
-
 app.use((err, req, res, next) => res.status(400).json({ error: "Requête invalide" }));
-
 app.listen(PORT, () => console.log(`Boutique prête sur http://localhost:${PORT}`));
