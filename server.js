@@ -258,10 +258,10 @@ app.post("/api/users/:id/reset", auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur, réessayez" }); }
 });
 
-// ---- Produits ----
+// ---- Produits (prix jusqu'à 100 000 000 FCFA : motos et téléphones possibles) ----
 function clean(b) {
   const price = Number(b.price);
-  if (!str(b.name, 80) || !str(b.cat, 40) || !(price >= 0 && price <= 100000)) return null;
+  if (!str(b.name, 80) || !str(b.cat, 40) || !(price >= 0 && price <= 100000000)) return null;
   const d = { name: str(b.name, 80), price: Math.round(price / 5) * 5, cat: str(b.cat, 40), emoji: str(b.emoji, 4) || "📦", desc: str(b.desc, 500) };
   if (typeof b.img === "string" && b.img.startsWith("data:image/") && b.img.length < 600000) d.img = b.img;
   return d;
