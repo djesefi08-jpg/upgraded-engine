@@ -1,5 +1,5 @@
-// ---- Rayons (Motos, Téléphones portables, Accessoires de téléphones), menu des catégories pour le vendeur
-// ---- et boutons « Valider » / « Marquer comme livrée » dans l'onglet Commandes ----
+// ---- Connexion obligatoire avant d'entrer dans la boutique, rayons (Motos, Téléphones, Accessoires),
+// ---- menu des catégories pour le vendeur et boutons « Valider » / « Marquer comme livrée » ----
 (function () {
   var RAYONS = [
     { cat: "Motos", icon: "🏍️", label: "Motos" },
@@ -41,6 +41,20 @@
     render();
     window.scrollTo(0, 0);
   });
+
+  // ---- Porte d'entrée : le client doit se connecter ou créer son compte avant de voir la boutique ----
+  var KEY = "stephy_client_token", LIBRES = ["compte", "connexion", "vendeur"];
+  function connecte() { try { return !!localStorage.getItem(KEY); } catch (e) { return true; } }
+  var _render = render;
+  render = function () {
+    var h = location.hash.replace(/^#\/?/, "").split("/")[0];
+    if (!connecte() && LIBRES.indexOf(h) < 0) { location.hash = "#/compte"; return; } // la page « Mon compte » s'affiche à la place
+    _render();
+    var t = document.querySelector("#app > h1");
+    if (!connecte() && h !== "vendeur" && t && t.textContent === "Mon compte" && !document.getElementById("gate-note")) {
+      t.insertAdjacentHTML("afterend", '<p id="gate-note" class="muted">👋 Bienvenue ! Connectez-vous ou créez votre compte pour accéder à la boutique.</p>');
+    }
+  };
 
   // ---- Espace vendeur : la catégorie d'un produit se choisit dans une liste ----
   function upgradeForm() {
